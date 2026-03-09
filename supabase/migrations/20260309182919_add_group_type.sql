@@ -1,0 +1,2 @@
+ALTER TABLE IF EXISTS public.groups
+ADD COLUMN IF NOT EXISTS type text DEFAULT 'day_to_day' NOT NULL;
