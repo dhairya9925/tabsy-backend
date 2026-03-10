@@ -1,0 +1,6 @@
+ALTER POLICY "Group members can view exclusions" ON "member_monthly_exclusions" TO authenticated USING (public.is_group_member(group_id, auth.uid()));--> statement-breakpoint
+ALTER POLICY "Group members can insert exclusions" ON "member_monthly_exclusions" TO authenticated WITH CHECK (public.is_group_member(group_id, auth.uid()));--> statement-breakpoint
+ALTER POLICY "Group members can delete exclusions" ON "member_monthly_exclusions" TO authenticated USING (public.is_group_member(group_id, auth.uid()));--> statement-breakpoint
+ALTER POLICY "Users can view monthly settlements for their groups" ON "monthly_settlements" TO authenticated USING (public.is_group_member(group_id, auth.uid()));--> statement-breakpoint
+ALTER POLICY "Users can insert monthly settlements for their groups" ON "monthly_settlements" TO authenticated WITH CHECK (public.is_group_member(group_id, auth.uid()));--> statement-breakpoint
+ALTER POLICY "Users can update monthly settlements for their groups" ON "monthly_settlements" TO authenticated USING (public.is_group_member(group_id, auth.uid()));
