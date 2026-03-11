@@ -1,0 +1,1098 @@
+{
+  "id": "f271d3e5-a479-430b-8294-380822e8564f",
+  "prevId": "9d840a2e-5278-459c-b968-b31b5fbb7855",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.expense_splits": {
+      "name": "expense_splits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "expense_id": {
+          "name": "expense_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_settled": {
+          "name": "is_settled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "expense_splits_expense_id_fkey": {
+          "name": "expense_splits_expense_id_fkey",
+          "tableFrom": "expense_splits",
+          "tableTo": "expenses",
+          "columnsFrom": [
+            "expense_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "Group members can view expense splits": {
+          "name": "Group members can view expense splits",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(EXISTS ( SELECT 1\n   FROM expenses e\n  WHERE ((e.id = expense_splits.expense_id) AND (e.group_id IS NOT NULL) AND public.is_group_member(e.group_id, auth.uid()))))"
+        },
+        "Expense creator can insert splits": {
+          "name": "Expense creator can insert splits",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Expense creator can delete splits": {
+          "name": "Expense creator can delete splits",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Group members can update their splits": {
+          "name": "Group members can update their splits",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ]
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.expenses": {
+      "name": "expenses",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expense_date": {
+          "name": "expense_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_DATE"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paid_by": {
+          "name": "paid_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_expenses_user_category": {
+          "name": "idx_expenses_user_category",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            },
+            {
+              "expression": "category",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_expenses_user_date": {
+          "name": "idx_expenses_user_date",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            },
+            {
+              "expression": "expense_date",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first",
+              "opclass": "date_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "Group members can create group expenses": {
+          "name": "Group members can create group expenses",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ],
+          "withCheck": "((group_id IS NOT NULL) AND (user_id = auth.uid()) AND public.is_group_member(group_id, auth.uid()))"
+        },
+        "Users can update their own expenses": {
+          "name": "Users can update their own expenses",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can delete their own expenses": {
+          "name": "Users can delete their own expenses",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can view their own expenses": {
+          "name": "Users can view their own expenses",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Group members can view group expenses": {
+          "name": "Group members can view group expenses",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can create their own expenses": {
+          "name": "Users can create their own expenses",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        }
+      },
+      "checkConstraints": {
+        "expenses_amount_check": {
+          "name": "expenses_amount_check",
+          "value": "amount > (0)::numeric"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.friends": {
+      "name": "friends",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "friend_id": {
+          "name": "friend_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "friends_user_id_friend_id_key": {
+          "name": "friends_user_id_friend_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "friend_id"
+          ]
+        }
+      },
+      "policies": {
+        "Users can view their own friend records": {
+          "name": "Users can view their own friend records",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(user_id = auth.uid() OR friend_id = auth.uid())"
+        },
+        "Users can insert friend requests": {
+          "name": "Users can insert friend requests",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ],
+          "withCheck": "(user_id = auth.uid())"
+        },
+        "Users can update friend requests sent to them": {
+          "name": "Users can update friend requests sent to them",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(friend_id = auth.uid())"
+        },
+        "Users can delete their own friend records": {
+          "name": "Users can delete their own friend records",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(user_id = auth.uid() OR friend_id = auth.uid())"
+        }
+      },
+      "checkConstraints": {
+        "friends_status_check": {
+          "name": "friends_status_check",
+          "value": "status IN ('pending', 'accepted', 'rejected')"
+        },
+        "friends_no_self_add_check": {
+          "name": "friends_no_self_add_check",
+          "value": "user_id <> friend_id"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.group_members": {
+      "name": "group_members",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'member'"
+        },
+        "joined_at": {
+          "name": "joined_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "group_members_group_id_fkey": {
+          "name": "group_members_group_id_fkey",
+          "tableFrom": "group_members",
+          "tableTo": "groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "group_members_group_id_user_id_key": {
+          "name": "group_members_group_id_user_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "user_id"
+          ]
+        }
+      },
+      "policies": {
+        "Members can view group members": {
+          "name": "Members can view group members",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "public.is_group_member(group_id, auth.uid())"
+        },
+        "Group admin can add members": {
+          "name": "Group admin can add members",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Group admin can remove members": {
+          "name": "Group admin can remove members",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ]
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.groups": {
+      "name": "groups",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'day_to_day'"
+        },
+        "monthly_rent": {
+          "name": "monthly_rent",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'0.00'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "Members can view their groups": {
+          "name": "Members can view their groups",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "public.is_group_member(id, auth.uid())"
+        },
+        "Authenticated users can create groups": {
+          "name": "Authenticated users can create groups",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Creator can update their groups": {
+          "name": "Creator can update their groups",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Creator can delete their groups": {
+          "name": "Creator can delete their groups",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ]
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.member_monthly_exclusions": {
+      "name": "member_monthly_exclusions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "month": {
+          "name": "month",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "year": {
+          "name": "year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exclusion_type": {
+          "name": "exclusion_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'partial'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "member_monthly_exclusions_group_id_fkey": {
+          "name": "member_monthly_exclusions_group_id_fkey",
+          "tableFrom": "member_monthly_exclusions",
+          "tableTo": "groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "member_monthly_exclusions_group_id_user_id_month_year_key": {
+          "name": "member_monthly_exclusions_group_id_user_id_month_year_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "user_id",
+            "month",
+            "year"
+          ]
+        }
+      },
+      "policies": {
+        "Group members can view exclusions": {
+          "name": "Group members can view exclusions",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "EXISTS (SELECT 1 FROM public.group_members gm WHERE gm.group_id = member_monthly_exclusions.group_id AND gm.user_id = auth.uid())"
+        },
+        "Group members can insert exclusions": {
+          "name": "Group members can insert exclusions",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ],
+          "withCheck": "EXISTS (SELECT 1 FROM public.group_members gm WHERE gm.group_id = group_id AND gm.user_id = auth.uid())"
+        },
+        "Group members can update exclusions": {
+          "name": "Group members can update exclusions",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ],
+          "using": "EXISTS (SELECT 1 FROM public.group_members gm WHERE gm.group_id = group_id AND gm.user_id = auth.uid())"
+        },
+        "Group members can delete exclusions": {
+          "name": "Group members can delete exclusions",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ],
+          "using": "EXISTS (SELECT 1 FROM public.group_members gm WHERE gm.group_id = group_id AND gm.user_id = auth.uid())"
+        }
+      },
+      "checkConstraints": {
+        "member_monthly_exclusions_month_check": {
+          "name": "member_monthly_exclusions_month_check",
+          "value": "month >= 1 AND month <= 12"
+        },
+        "member_monthly_exclusions_year_check": {
+          "name": "member_monthly_exclusions_year_check",
+          "value": "year >= 2020"
+        },
+        "member_monthly_exclusions_type_check": {
+          "name": "member_monthly_exclusions_type_check",
+          "value": "exclusion_type IN ('partial', 'full')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.member_monthly_status": {
+      "name": "member_monthly_status",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "settlement_id": {
+          "name": "settlement_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'complete'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "member_monthly_status_settlement_id_fkey": {
+          "name": "member_monthly_status_settlement_id_fkey",
+          "tableFrom": "member_monthly_status",
+          "tableTo": "monthly_settlements",
+          "columnsFrom": [
+            "settlement_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "member_monthly_status_settlement_id_user_id_key": {
+          "name": "member_monthly_status_settlement_id_user_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "settlement_id",
+            "user_id"
+          ]
+        }
+      },
+      "policies": {
+        "Users can view member status for their groups": {
+          "name": "Users can view member status for their groups",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can insert their own member status": {
+          "name": "Users can insert their own member status",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can delete their own member status": {
+          "name": "Users can delete their own member status",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "authenticated"
+          ]
+        }
+      },
+      "checkConstraints": {
+        "member_monthly_status_status_check": {
+          "name": "member_monthly_status_status_check",
+          "value": "status IN ('complete')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.monthly_settlements": {
+      "name": "monthly_settlements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "month": {
+          "name": "month",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "year": {
+          "name": "year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "monthly_settlements_group_id_fkey": {
+          "name": "monthly_settlements_group_id_fkey",
+          "tableFrom": "monthly_settlements",
+          "tableTo": "groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "monthly_settlements_group_id_month_year_key": {
+          "name": "monthly_settlements_group_id_month_year_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "month",
+            "year"
+          ]
+        }
+      },
+      "policies": {
+        "Users can view monthly settlements for their groups": {
+          "name": "Users can view monthly settlements for their groups",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "public.is_group_member(group_id, auth.uid())"
+        },
+        "Users can insert monthly settlements for their groups": {
+          "name": "Users can insert monthly settlements for their groups",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ],
+          "withCheck": "public.is_group_member(group_id, auth.uid())"
+        },
+        "Users can update monthly settlements for their groups": {
+          "name": "Users can update monthly settlements for their groups",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ],
+          "using": "public.is_group_member(group_id, auth.uid())"
+        }
+      },
+      "checkConstraints": {
+        "monthly_settlements_month_check": {
+          "name": "monthly_settlements_month_check",
+          "value": "month >= 1 AND month <= 12"
+        },
+        "monthly_settlements_status_check": {
+          "name": "monthly_settlements_status_check",
+          "value": "status IN ('open', 'locked')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.profiles": {
+      "name": "profiles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "avatar_url": {
+          "name": "avatar_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "is_shadow": {
+          "name": "is_shadow",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "shadow_created_by": {
+          "name": "shadow_created_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "profiles_shadow_created_by_profiles_user_id_fk": {
+          "name": "profiles_shadow_created_by_profiles_user_id_fk",
+          "tableFrom": "profiles",
+          "tableTo": "profiles",
+          "columnsFrom": [
+            "shadow_created_by"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "profiles_user_id_key": {
+          "name": "profiles_user_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id"
+          ]
+        }
+      },
+      "policies": {
+        "Users can view their own profile": {
+          "name": "Users can view their own profile",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(auth.uid() = user_id)"
+        },
+        "Users can view profiles of group members": {
+          "name": "Users can view profiles of group members",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can insert their own profile": {
+          "name": "Users can insert their own profile",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can update their own profile": {
+          "name": "Users can update their own profile",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "authenticated"
+          ]
+        },
+        "Users can view shadow profiles they created": {
+          "name": "Users can view shadow profiles they created",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "authenticated"
+          ],
+          "using": "(is_shadow = true AND shadow_created_by = auth.uid())"
+        },
+        "Users can insert shadow profiles": {
+          "name": "Users can insert shadow profiles",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "authenticated"
+          ],
+          "withCheck": "(is_shadow = true AND shadow_created_by = auth.uid())"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

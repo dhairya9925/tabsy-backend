@@ -29,6 +29,27 @@
       "when": 1773127292390,
       "tag": "0003_ancient_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1773150859746,
+      "tag": "0004_fancy_sandman",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1773150917763,
+      "tag": "0005_good_kabuki",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1773204367287,
+      "tag": "0006_dazzling_longshot",
+      "breakpoints": true
     }
   ]
 }
