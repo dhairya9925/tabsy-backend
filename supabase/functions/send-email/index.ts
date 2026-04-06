@@ -19,6 +19,9 @@ serve(async (req) => {
       email_data: { token: string; token_hash: string; redirect_to: string; email_action_type: string }
     }
     
+    const escapeHtml = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const safeName = escapeHtml(user.user_metadata?.display_name || 'Friend');
+
     // Default subject and content
     let subject = "Your Splitwise Buddy Account"
     let htmlContent = `<p>Click the link below to verify your account:</p>`
@@ -27,7 +30,7 @@ serve(async (req) => {
     if (email_data.email_action_type === 'signup') {
         subject = "Welcome to Splitwise Buddy! Please verify your email."
         htmlContent = `
-          <h2>Welcome, ${user.user_metadata?.display_name || 'Friend'}!</h2>
+          <h2>Welcome, ${safeName}!</h2>
           <p>Thanks for signing up to Splitwise Buddy.</p>
           <p>Please confirm your email by clicking the link below:</p>
           <a href="${email_data.redirect_to}?token_hash=${email_data.token_hash}&type=signup">Confirm your email</a>
