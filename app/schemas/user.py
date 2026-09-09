@@ -12,6 +12,7 @@ class ProfileResponse(BaseModel):
     is_shadow: bool
     created_at: datetime
     updated_at: datetime
+    shadow_created_by: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
