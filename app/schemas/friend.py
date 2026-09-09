@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import date, datetime
+import re
 from uuid import UUID
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.expense import ExpenseResponse
+from app.schemas.expense import ExpenseResponse, ExpenseSplitWrite, PositiveMoney
 
 
 class PendingShadowProfileResponse(BaseModel):
@@ -45,4 +46,79 @@ class FriendBalanceResponse(BaseModel):
 
 
 FriendExpenseFeedResponse = ExpenseResponse
+
+
+class FriendRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    email: str | None = None
+    user_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "FriendRequestCreate":
+        if not self.email and not self.user_id:
+            raise ValueError("Either email or user_id must be provided")
+        return self
+
+
+class FriendExpenseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: PositiveMoney
+    category: str = Field(default="food", min_length=1, max_length=100)
+    note: str | None = Field(default=None, max_length=2000)
+    expense_date: date = Field(default_factory=date.today)
+    paid_by: UUID | None = None
+    splits: list[ExpenseSplitWrite] = Field(default_factory=list, max_length=2)
+    split_type: str | None = Field(default=None, pattern="^(equal|full)$")
+
+    @field_validator("expense_date", mode="before")
+    @classmethod
+    def iso_date_only(cls, value):
+        if not isinstance(value, date) and (not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            raise ValueError("Use an ISO date (YYYY-MM-DD)")
+        return value
+
+
+class FriendExpenseUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: PositiveMoney | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=100)
+    note: str | None = Field(default=None, max_length=2000)
+    expense_date: date | None = None
+    paid_by: UUID | None = None
+    splits: list[ExpenseSplitWrite] | None = Field(default=None, max_length=2)
+    split_type: str | None = Field(default=None, pattern="^(equal|full)$")
+
+    @field_validator("amount", "category", "expense_date", "splits")
+    @classmethod
+    def reject_null(cls, value):
+        if value is None:
+            raise ValueError("Field cannot be null")
+        return value
+
+    @field_validator("expense_date", mode="before")
+    @classmethod
+    def iso_date_only(cls, value):
+        if value is not None and not isinstance(value, date) and (not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            raise ValueError("Use an ISO date (YYYY-MM-DD)")
+        return value
+
+
+class MergeShadowProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    shadow_user_id: UUID
+
+
+class CreateShadowProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    display_name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=255)
+
+
+class CreateShadowProfileResponse(BaseModel):
+    profile: FriendProfileResponse
+    shadow_user_id: UUID
+
 

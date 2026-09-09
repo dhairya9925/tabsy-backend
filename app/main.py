@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 from app.api.v1.api import api_router
 from app.core.config import settings
@@ -21,6 +22,13 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_root_openapi():
+    """Return the OpenAPI schema at /openapi.json as well as /api/v1/openapi.json."""
+    return JSONResponse(app.openapi())
+
 
 # CORS middleware configuration
 app.add_middleware(
@@ -52,7 +60,7 @@ async def validation_exception_handler(
     )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"data": None, "error": f"Validation error: {error_msg}", "meta": {"details": errors}},
+        content=jsonable_encoder({"data": None, "error": f"Validation error: {error_msg}", "meta": {"details": errors}}, custom_encoder={ValueError: str}),
     )
 
 

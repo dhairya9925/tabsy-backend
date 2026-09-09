@@ -5,10 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.session import get_db
 from app.schemas.envelope import ResponseEnvelope
-from app.schemas.user import ProfileLookupResponse, ProfileResponse
-from app.services.user_service import get_profile_by_user_id, lookup_user_by_email
+from app.schemas.user import ProfileLookupResponse, ProfileResponse, ProfileUpdate
+from app.services.user_service import get_profile_by_user_id, lookup_user_by_email, update_profile
 
 router = APIRouter()
+
+
+@router.patch("/me", response_model=ResponseEnvelope[ProfileResponse])
+async def patch_current_user_profile(
+    payload: ProfileUpdate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[ProfileResponse]:
+    """Update own display name/avatar. Identity, email and shadow fields are rejected."""
+    profile = await update_profile(db, current_user.id, payload)
+    return ResponseEnvelope(data=ProfileResponse.model_validate(profile))
 
 
 @router.get("/me", response_model=ResponseEnvelope[ProfileResponse])

@@ -2,9 +2,24 @@ from typing import Sequence
 from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException
 
 from app.models.friend import Friend
 from app.models.profile import Profile
+from app.schemas.user import ProfileUpdate
+
+
+async def update_profile(db: AsyncSession, user_id: UUID, payload: ProfileUpdate) -> Profile:
+    async with db.begin():
+        profile = (await db.execute(
+            select(Profile).where(Profile.user_id == user_id).with_for_update()
+        )).scalar_one_or_none()
+        if profile is None:
+            raise HTTPException(404, "Profile not found")
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            setattr(profile, key, value)
+        await db.flush()
+    return profile
 
 
 async def get_profile_by_user_id(db: AsyncSession, user_id: UUID) -> Profile | None:
@@ -147,4 +162,3 @@ async def get_friend_profile(
     Retrieves friend's profile after verifying access.
     """
     return await get_profile_by_user_id(db, friend_id)
-

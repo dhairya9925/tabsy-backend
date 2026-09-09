@@ -1,12 +1,132 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Sequence
 from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from fastapi import HTTPException
 
 from app.models.expense import Expense, ExpenseSplit
+from app.models.category import UserCategory
+from app.models.friend import Friend
+from app.models.profile import Profile
+from app.schemas.expense import PersonalExpenseCreate, PersonalExpenseUpdate, ExpenseSplitWrite
+from app.schemas.friend import FriendExpenseCreate, FriendExpenseUpdate
+from app.services.category_service import DEFAULT_CATEGORY_IDS
+from app.services.user_service import check_friendship_or_shadow_access
+
+
+async def _validate_category(db: AsyncSession, user_id: UUID, category: str) -> None:
+    if category in DEFAULT_CATEGORY_IDS:
+        return
+    owned = await db.scalar(select(UserCategory.id).where(
+        UserCategory.user_id == user_id, UserCategory.slug == category,
+    ).with_for_update(read=True))
+    if owned is None:
+        raise HTTPException(422, "Category must be a default category or one of your custom categories")
+
+
+async def _validate_allocation(
+    db: AsyncSession, user_id: UUID, amount: Decimal, payer_id: UUID,
+    splits: list[ExpenseSplitWrite],
+) -> None:
+    ids = [s.user_id for s in splits]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, "Each participant may have only one split")
+    if splits:
+        if user_id not in ids or payer_id not in ids:
+            raise HTTPException(422, "Splits must include the current user and payer")
+        if sum((s.amount for s in splits), Decimal("0")) != amount:
+            raise HTTPException(422, "Split amounts must add up to the expense amount")
+    elif payer_id != user_id:
+        raise HTTPException(422, "An expense paid by someone else requires splits")
+
+    external_ids = set(ids) - {user_id}
+    if not external_ids:
+        return
+    relationships = (await db.execute(select(Friend).where(
+        or_(Friend.user_id == user_id, Friend.friend_id == user_id), Friend.status == "accepted",
+    ))).scalars().all()
+    allowed = {f.friend_id if f.user_id == user_id else f.user_id for f in relationships}
+    shadow_ids = (await db.execute(select(Profile.user_id).where(
+        Profile.is_shadow.is_(True), Profile.shadow_created_by == user_id,
+    ))).scalars().all()
+    allowed.update(shadow_ids)
+    if external_ids - allowed:
+        raise HTTPException(403, "Splits may only include yourself, accepted friends or your shadow contacts")
+
+
+async def create_personal_expense(db: AsyncSession, user_id: UUID, payload: PersonalExpenseCreate) -> Expense:
+    async with db.begin():
+        await _validate_category(db, user_id, payload.category)
+        payer_id = payload.paid_by or user_id
+        await _validate_allocation(db, user_id, payload.amount, payer_id, payload.splits)
+        expense = Expense(
+            user_id=user_id, group_id=None, paid_by=payer_id,
+            amount=payload.amount, category=payload.category, note=payload.note,
+            expense_date=payload.expense_date,
+            splits=[ExpenseSplit(user_id=s.user_id, amount=s.amount, is_settled=False) for s in payload.splits],
+        )
+        db.add(expense)
+        await db.flush()
+    return expense
+
+
+async def _owned_non_group_expense(db: AsyncSession, user_id: UUID, expense_id: UUID) -> Expense:
+    expense = (await db.execute(select(Expense).where(
+        Expense.id == expense_id, Expense.user_id == user_id, Expense.group_id.is_(None),
+    ).options(selectinload(Expense.splits)).with_for_update())).scalar_one_or_none()
+    if expense is None:
+        raise HTTPException(404, "Personal expense not found")
+    # Lock splits too: another client can independently mark a split settled.
+    await db.execute(select(ExpenseSplit).where(ExpenseSplit.expense_id == expense_id)
+                     .with_for_update().execution_options(populate_existing=True))
+    return expense
+
+
+async def update_personal_expense(db: AsyncSession, user_id: UUID, expense_id: UUID, payload: PersonalExpenseUpdate) -> Expense:
+    async with db.begin():
+        expense = await _owned_non_group_expense(db, user_id, expense_id)
+        updates = payload.model_dump(exclude_unset=True, exclude={"splits"})
+        # A deleted category remains a valid unchanged legacy reference.
+        if "category" in updates and updates["category"] != expense.category:
+            await _validate_category(db, user_id, updates["category"])
+        amount = updates.get("amount", expense.amount)
+        payer_id = updates.get("paid_by", expense.paid_by) or user_id
+        splits = payload.splits if "splits" in payload.model_fields_set else [
+            ExpenseSplitWrite(user_id=s.user_id, amount=s.amount) for s in expense.splits
+        ]
+        if {"amount", "paid_by", "splits"} & payload.model_fields_set:
+            await _validate_allocation(db, user_id, amount, payer_id, splits)
+        existing = {s.user_id: s for s in expense.splits}
+        desired = {s.user_id: s.amount for s in splits}
+        if any(s.is_settled and (desired.get(s.user_id) != s.amount or payer_id != (expense.paid_by or user_id)) for s in expense.splits):
+            raise HTTPException(409, "Settled allocations cannot be changed")
+        for key, value in updates.items():
+            setattr(expense, key, value)
+        if "splits" in payload.model_fields_set:
+            replacement = []
+            for split in splits:
+                row = existing.get(split.user_id)
+                if row is None:
+                    row = ExpenseSplit(user_id=split.user_id, amount=split.amount, is_settled=False)
+                else:
+                    row.amount = split.amount
+                replacement.append(row)
+            expense.splits = replacement
+        expense.edited_at = datetime.now(timezone.utc)
+        await db.flush()
+    return expense
+
+
+async def delete_personal_expense(db: AsyncSession, user_id: UUID, expense_id: UUID) -> None:
+    async with db.begin():
+        expense = await _owned_non_group_expense(db, user_id, expense_id)
+        # ORM cascade deletes loaded splits before the expense in this transaction.
+        # This does not depend on Supabase RLS or a deployed cascade being present.
+        await db.delete(expense)
+        await db.flush()
 
 
 async def get_personal_expenses(
@@ -190,4 +310,202 @@ async def get_friend_expenses_feed(
 
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+async def create_friend_expense(
+    db: AsyncSession,
+    user_id: UUID,
+    friend_id: UUID,
+    payload: FriendExpenseCreate,
+) -> Expense:
+    """
+    Creates a 1:1 shared non-group expense between user_id and friend_id.
+    - Rejects sharing an expense with yourself (400).
+    - Verifies active friendship or shadow access between users (403).
+    - Validates category (default or owned custom category).
+    - Payer must be user_id or friend_id.
+    - Creates expense and two splits atomically in a single SQL transaction.
+    """
+    if user_id == friend_id:
+        raise HTTPException(400, "Cannot share expense with yourself")
+
+    payer_id = payload.paid_by or user_id
+    if payer_id != user_id and payer_id != friend_id:
+        raise HTTPException(422, "Payer must be either yourself or your friend")
+
+    async with db.begin():
+        has_access = await check_friendship_or_shadow_access(db, user_id, friend_id)
+        if not has_access:
+            raise HTTPException(403, "You can only share expenses with accepted friends or contacts")
+
+        await _validate_category(db, user_id, payload.category)
+
+        two_dp = Decimal("0.01")
+        if payload.splits:
+            ids = [s.user_id for s in payload.splits]
+            if set(ids) != {user_id, friend_id}:
+                raise HTTPException(422, "Splits must include exactly yourself and your friend")
+            if sum((s.amount for s in payload.splits), Decimal("0")) != payload.amount:
+                raise HTTPException(422, "Split amounts must add up to the expense amount")
+            splits_to_create = [
+                ExpenseSplit(user_id=s.user_id, amount=s.amount, is_settled=False)
+                for s in payload.splits
+            ]
+        else:
+            if payload.split_type == "full":
+                other_id = friend_id if payer_id == user_id else user_id
+                splits_to_create = [
+                    ExpenseSplit(user_id=payer_id, amount=Decimal("0.00"), is_settled=False),
+                    ExpenseSplit(user_id=other_id, amount=payload.amount, is_settled=False),
+                ]
+            else:
+                half = (payload.amount / Decimal("2")).quantize(two_dp, rounding=ROUND_HALF_UP)
+                remainder = payload.amount - half
+                splits_to_create = [
+                    ExpenseSplit(user_id=user_id, amount=half, is_settled=False),
+                    ExpenseSplit(user_id=friend_id, amount=remainder, is_settled=False),
+                ]
+
+        expense = Expense(
+            user_id=user_id,
+            group_id=None,
+            paid_by=payer_id,
+            amount=payload.amount,
+            category=payload.category,
+            note=payload.note,
+            expense_date=payload.expense_date,
+            splits=splits_to_create,
+        )
+        db.add(expense)
+        await db.flush()
+
+    return expense
+
+
+async def _shared_friend_expense(
+    db: AsyncSession,
+    user_id: UUID,
+    friend_id: UUID,
+    expense_id: UUID,
+) -> Expense:
+    """
+    Scopes and locks a 1:1 shared non-group expense between user_id and friend_id.
+    Ensures the caller is authorized (payer, creator, or split owner).
+    """
+    expense = (await db.execute(
+        select(Expense)
+        .where(
+            Expense.id == expense_id,
+            Expense.group_id.is_(None),
+        )
+        .options(selectinload(Expense.splits))
+        .with_for_update()
+    )).scalar_one_or_none()
+
+    if expense is None:
+        raise HTTPException(404, "Shared expense not found")
+
+    await db.execute(
+        select(ExpenseSplit)
+        .where(ExpenseSplit.expense_id == expense_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+    split_user_ids = {s.user_id for s in expense.splits}
+    payer_id = expense.paid_by or expense.user_id
+    parties = split_user_ids | {payer_id, expense.user_id}
+
+    if user_id not in parties or friend_id not in parties:
+        raise HTTPException(404, "Shared expense not found for this friend")
+
+    return expense
+
+
+async def update_friend_expense(
+    db: AsyncSession,
+    user_id: UUID,
+    friend_id: UUID,
+    expense_id: UUID,
+    payload: FriendExpenseUpdate,
+) -> Expense:
+    """
+    Updates a 1:1 shared non-group expense and synchronizes its splits.
+    - Rejects updating settled allocations (409).
+    - Recalculates splits if amount, payer, or split_type/splits are provided.
+    """
+    async with db.begin():
+        expense = await _shared_friend_expense(db, user_id, friend_id, expense_id)
+
+        updates = payload.model_dump(exclude_unset=True, exclude={"splits", "split_type"})
+        if "category" in updates and updates["category"] != expense.category:
+            await _validate_category(db, user_id, updates["category"])
+
+        amount = updates.get("amount", expense.amount)
+        payer_id = updates.get("paid_by", expense.paid_by) or expense.user_id
+        if payer_id != user_id and payer_id != friend_id:
+            raise HTTPException(422, "Payer must be either yourself or your friend")
+
+        two_dp = Decimal("0.01")
+        if payload.splits is not None:
+            ids = [s.user_id for s in payload.splits]
+            if set(ids) != {user_id, friend_id}:
+                raise HTTPException(422, "Splits must include exactly yourself and your friend")
+            if sum((s.amount for s in payload.splits), Decimal("0")) != amount:
+                raise HTTPException(422, "Split amounts must add up to the expense amount")
+            new_split_data = {s.user_id: s.amount for s in payload.splits}
+        elif payload.split_type is not None:
+            if payload.split_type == "full":
+                other_id = friend_id if payer_id == user_id else user_id
+                new_split_data = {payer_id: Decimal("0.00"), other_id: amount}
+            else:
+                half = (amount / Decimal("2")).quantize(two_dp, rounding=ROUND_HALF_UP)
+                remainder = amount - half
+                new_split_data = {user_id: half, friend_id: remainder}
+        elif "amount" in updates:
+            half = (amount / Decimal("2")).quantize(two_dp, rounding=ROUND_HALF_UP)
+            remainder = amount - half
+            new_split_data = {user_id: half, friend_id: remainder}
+        else:
+            new_split_data = None
+
+        if any(s.is_settled for s in expense.splits):
+            if new_split_data is not None or "paid_by" in updates or "amount" in updates:
+                raise HTTPException(409, "Settled allocations cannot be changed")
+
+        for key, value in updates.items():
+            setattr(expense, key, value)
+
+        if new_split_data is not None:
+            existing = {s.user_id: s for s in expense.splits}
+            replacement = []
+            for uid, s_amount in new_split_data.items():
+                row = existing.get(uid)
+                if row is None:
+                    row = ExpenseSplit(user_id=uid, amount=s_amount, is_settled=False)
+                else:
+                    row.amount = s_amount
+                replacement.append(row)
+            expense.splits = replacement
+
+        expense.edited_at = datetime.now(timezone.utc)
+        await db.flush()
+
+    return expense
+
+
+async def delete_friend_expense(
+    db: AsyncSession,
+    user_id: UUID,
+    friend_id: UUID,
+    expense_id: UUID,
+) -> None:
+    """
+    Deletes a 1:1 shared non-group expense.
+    Splits cascade delete within the same transaction.
+    """
+    async with db.begin():
+        expense = await _shared_friend_expense(db, user_id, friend_id, expense_id)
+        await db.delete(expense)
+        await db.flush()
 

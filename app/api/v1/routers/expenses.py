@@ -1,15 +1,58 @@
 from datetime import date
 from typing import Annotated
+from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.session import get_db
 from app.schemas.envelope import ResponseEnvelope
-from app.schemas.expense import ExpenseResponse
-from app.services.expense_service import get_personal_expenses
+from app.schemas.expense import ExpenseResponse, PersonalExpenseCreate, PersonalExpenseUpdate
+from app.services.expense_service import create_personal_expense, delete_personal_expense, get_personal_expenses, update_personal_expense
 
 router = APIRouter()
+
+
+@router.post("/personal", response_model=ResponseEnvelope[ExpenseResponse], status_code=201)
+async def post_personal_expense(
+    payload: PersonalExpenseCreate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[ExpenseResponse]:
+    """Create an owned non-group expense and optional splits atomically.
+
+    group_id is always null. Amounts use at most two decimal places; allocations
+    must total the amount and may include only self, accepted friends/shadow contacts.
+    """
+    expense = await create_personal_expense(db, current_user.id, payload)
+    return ResponseEnvelope(data=ExpenseResponse.model_validate(expense))
+
+
+@router.patch("/{expense_id}", response_model=ResponseEnvelope[ExpenseResponse])
+async def patch_personal_expense(
+    expense_id: UUID,
+    payload: PersonalExpenseUpdate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[ExpenseResponse]:
+    """Update own non-group expense, atomically replacing splits if supplied.
+
+    Omitted splits are preserved. Group/other-user IDs return 404. Ownership,
+    group and settlement flags cannot be edited through the request body.
+    """
+    expense = await update_personal_expense(db, current_user.id, expense_id, payload)
+    return ResponseEnvelope(data=ExpenseResponse.model_validate(expense))
+
+
+@router.delete("/{expense_id}", response_model=ResponseEnvelope[None])
+async def remove_personal_expense(
+    expense_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[None]:
+    """Delete own non-group expense and all its splits in one transaction."""
+    await delete_personal_expense(db, current_user.id, expense_id)
+    return ResponseEnvelope()
 
 
 @router.get("/personal", response_model=ResponseEnvelope[list[ExpenseResponse]])
