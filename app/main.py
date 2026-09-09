@@ -1,4 +1,7 @@
+import json
 import logging
+import time
+import uuid
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.core.rate_limiter import rate_limiter
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +26,101 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+@app.middleware("http")
+async def mobile_readiness_middleware(request: Request, call_next):
+    """
+    Mobile-ready middleware providing:
+    - X-Request-ID correlation tracking across microservices/mobile logs.
+    - Sliding window rate limiting with standard headers and 429 response envelope.
+    - Structured JSON access logging with duration and client metadata.
+    """
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    path = request.url.path
+    is_exempt = path in ("/api/v1/health", "/openapi.json", f"{settings.API_V1_STR}/openapi.json") or path.startswith(("/docs", "/redoc"))
+    rate_limit_headers = {}
+
+    if settings.RATE_LIMIT_ENABLED and not is_exempt:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            client_key = f"auth:{hash(auth_header)}"
+        else:
+            client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1")
+            client_key = f"ip:{client_ip.split(',')[0].strip()}"
+
+        rate_limiter.limit = settings.RATE_LIMIT_PER_MINUTE
+        allowed, limit, remaining, retry_after = await rate_limiter.check(client_key)
+
+        if not allowed:
+            logger.warning(
+                json.dumps({
+                    "event": "rate_limit_exceeded",
+                    "request_id": request_id,
+                    "client_key": client_key,
+                    "path": path,
+                    "method": request.method,
+                })
+            )
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "data": None,
+                    "error": f"Rate limit exceeded. Please retry in {retry_after} seconds.",
+                    "meta": {"retry_after": retry_after},
+                },
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(limit),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(retry_after),
+                    "X-Request-ID": request_id,
+                },
+            )
+
+        rate_limit_headers = {
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": str(remaining),
+        }
+
+    start_time = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        logger.error(
+            json.dumps({
+                "event": "request_failed",
+                "request_id": request_id,
+                "method": request.method,
+                "path": path,
+                "duration_ms": duration_ms,
+                "error": str(exc),
+            })
+        )
+        raise exc
+
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    logger.info(
+        json.dumps({
+            "event": "http_request",
+            "request_id": request_id,
+            "method": request.method,
+            "path": path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+            "client_ip": request.client.host if request.client else "unknown",
+        })
+    )
+
+    response.headers["X-Request-ID"] = request_id
+    for k, v in rate_limit_headers.items():
+        response.headers[k] = v
+
+    return response
 
 
 @app.get("/openapi.json", include_in_schema=False)
