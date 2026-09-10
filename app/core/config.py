@@ -20,10 +20,6 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = Field(validation_alias=AliasChoices("SUPABASE_URL", "VITE_SUPABASE_URL"))
     SUPABASE_JWT_SECRET: str | None = Field(default=None, validation_alias=AliasChoices("SUPABASE_JWT_SECRET", "JWT_SECRET"))
 
-    # Rate Limiting
-    RATE_LIMIT_PER_MINUTE: int = Field(default=120, validation_alias=AliasChoices("RATE_LIMIT_PER_MINUTE", "RATE_LIMIT"))
-    RATE_LIMIT_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RATE_LIMIT_ENABLED"))
-
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:8080",
