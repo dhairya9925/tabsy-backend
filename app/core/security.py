@@ -48,21 +48,28 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
             )
             return payload
 
-        # Symmetric (Secret) fallback flow: HS256
+        # Symmetric (Secret) flow: HS256 (Self-hosted or Supabase secret)
         elif alg == "HS256":
-            if not settings.SUPABASE_JWT_SECRET:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token signed with HS256 but SUPABASE_JWT_SECRET is not configured",
+            secret = settings.secret_key
+            unverified_claims = jwt.decode(token, options={"verify_signature": False})
+            has_aud = "aud" in unverified_claims
+            if has_aud:
+                payload = jwt.decode(
+                    token,
+                    secret,
+                    algorithms=["HS256"],
+                    audience="authenticated",
+                    options={"verify_aud": True, "verify_exp": True},
                 )
-            payload = jwt.decode(
-                token,
-                settings.SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                audience="authenticated",
-                options={"verify_aud": True, "verify_exp": True},
-            )
-            return payload
+                return payload
+            else:
+                payload = jwt.decode(
+                    token,
+                    secret,
+                    algorithms=["HS256"],
+                    options={"verify_aud": False, "verify_exp": True},
+                )
+                return payload
 
         else:
             raise HTTPException(

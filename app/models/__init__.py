@@ -5,6 +5,7 @@ from app.models.expense import Expense, ExpenseSplit
 from app.models.settlement import MonthlySettlement, MemberMonthlyStatus, MemberMonthlyExclusion
 from app.models.friend import Friend
 from app.models.category import UserCategory
+from app.models.user_credential import UserCredential
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "MemberMonthlyExclusion",
     "Friend",
     "UserCategory",
+    "UserCredential",
 ]

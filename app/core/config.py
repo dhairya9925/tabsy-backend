@@ -16,14 +16,19 @@ class Settings(BaseSettings):
     # Database (reads DATABASE_URL)
     DATABASE_URL: str = Field(validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"))
 
-    # Supabase Auth (reads SUPABASE_URL or VITE_SUPABASE_URL)
-    SUPABASE_URL: str = Field(validation_alias=AliasChoices("SUPABASE_URL", "VITE_SUPABASE_URL"))
+    # Auth / JWT (self-hosted HS256 + Supabase fallback)
+    JWT_SECRET: str | None = Field(default=None, validation_alias=AliasChoices("JWT_SECRET", "SUPABASE_JWT_SECRET"))
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
+    SUPABASE_URL: str = Field(default="http://localhost:8000", validation_alias=AliasChoices("SUPABASE_URL", "VITE_SUPABASE_URL"))
     SUPABASE_JWT_SECRET: str | None = Field(default=None, validation_alias=AliasChoices("SUPABASE_JWT_SECRET", "JWT_SECRET"))
 
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:8080",
         "http://127.0.0.1:8080",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
@@ -63,6 +68,15 @@ class Settings(BaseSettings):
         """Returns the Supabase Auth JWKS endpoint URL."""
         base = self.SUPABASE_URL.rstrip("/")
         return f"{base}/auth/v1/.well-known/jwks.json"
+
+    @property
+    def secret_key(self) -> str:
+        """Returns the active JWT signing key."""
+        return (
+            self.JWT_SECRET
+            or self.SUPABASE_JWT_SECRET
+            or "expense-manager-development-secret-key-do-not-use-in-production"
+        )
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT_DIR / ".env"), ".env"),

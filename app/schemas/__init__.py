@@ -47,9 +47,13 @@ from app.schemas.settlement import (
     MonthlySettlementCreate,
     MonthlySettlementResponse,
 )
+from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse
 from app.schemas.user import ProfileLookupResponse, ProfileResponse
 
 __all__ = [
+    "SignupRequest",
+    "LoginRequest",
+    "TokenResponse",
     "ResponseEnvelope",
     "HealthResponse",
     "ProfileResponse",
