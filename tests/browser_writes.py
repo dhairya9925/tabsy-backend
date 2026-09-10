@@ -220,7 +220,7 @@ async def main():
         try:
             with open(f"{temp}/servers.log", "w+") as log:
                 processes.append(subprocess.Popen([sys.executable, "-m", "tests.browser_writes", "--serve", str(api_port)], cwd=ROOT / "backend", env=env, stdout=log, stderr=log))
-                processes.append(subprocess.Popen(["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(frontend_port), "--strictPort"], cwd=ROOT, env=env, stdout=log, stderr=log, start_new_session=True))
+                processes.append(subprocess.Popen(["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(frontend_port), "--strictPort"], cwd=ROOT / "frontend", env=env, stdout=log, stderr=log, start_new_session=True))
                 processes.append(subprocess.Popen([chrome, "--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
                                                   f"--user-data-dir={temp}/chrome", f"--remote-debugging-port={chrome_port}", "about:blank"], stdout=log, stderr=log))
                 await wait_http(f"{api}/api/v1/health")
