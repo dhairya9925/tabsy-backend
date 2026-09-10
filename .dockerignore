@@ -1,0 +1,33 @@
+# Python
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+tests/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Env files (passed at runtime via --env-file, not baked into image)
+.env
+.env.*
+
+# Docs & misc
+*.md
+*.zip
+uv.lock
