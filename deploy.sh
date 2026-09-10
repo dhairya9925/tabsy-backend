@@ -63,7 +63,8 @@ docker run -d \
 echo "🏥 Waiting for candidate container health check..."
 HEALTHY=false
 for i in $(seq 1 $HEALTH_RETRIES); do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TEMP_PORT}${HEALTH_ENDPOINT}" 2>/dev/null || echo "000")
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TEMP_PORT}${HEALTH_ENDPOINT}" 2>/dev/null || true)
+    [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
     if [ "$HTTP_CODE" = "200" ]; then
         HEALTHY=true
         echo "✅ Candidate container healthy after ${i} check(s). (HTTP ${HTTP_CODE})"
@@ -74,10 +75,13 @@ for i in $(seq 1 $HEALTH_RETRIES); do
 done
 
 if [ "$HEALTHY" != "true" ]; then
+    echo ""
     echo "❌ Candidate failed health check after ${HEALTH_RETRIES} attempts. Aborting."
+    echo "📋 Candidate container state:"
+    docker inspect -f '   Status: {{.State.Status}} | ExitCode: {{.State.ExitCode}} | OOMKilled: {{.State.OOMKilled}} | Error: "{{.State.Error}}"' "$TEMP_NAME" 2>/dev/null || true
     echo "📋 Last 50 lines of candidate container logs:"
-    docker logs --tail 50 "$TEMP_NAME" 2>/dev/null || true
-    docker rm -f "$TEMP_NAME" 2>/dev/null || true
+    docker logs --tail 50 "$TEMP_NAME" 2>&1 || true
+    docker rm -f "$TEMP_NAME" >/dev/null 2>&1 || true
     exit 1
 fi
 

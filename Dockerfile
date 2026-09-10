@@ -19,16 +19,17 @@ FROM python:3.12-slim AS runtime
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
 
-# Copy the virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
+# Copy the virtual environment from builder with proper permissions
+COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
+RUN chown -R appuser:appuser /app
 
 # Copy application source
-COPY app/ ./app/
+COPY --chown=appuser:appuser app/ ./app/
 
 # Switch to non-root user
 USER appuser
