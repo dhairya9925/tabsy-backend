@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Sequence
 from uuid import UUID
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException
@@ -16,15 +16,43 @@ from app.schemas.friend import FriendExpenseCreate, FriendExpenseUpdate
 from app.services.category_service import DEFAULT_CATEGORY_IDS
 from app.services.user_service import check_friendship_or_shadow_access
 
+CATEGORY_NAME_MAP = {
+    "food & dining": "food",
+    "food": "food",
+    "dining": "food",
+    "transport": "transport",
+    "travel": "transport",
+    "transportation": "transport",
+    "shopping": "shopping",
+    "shop": "shopping",
+    "bills & utilities": "bills",
+    "bills": "bills",
+    "utilities": "bills",
+    "other": "other",
+    "system": "system",
+}
 
-async def _validate_category(db: AsyncSession, user_id: UUID, category: str) -> None:
-    if category in DEFAULT_CATEGORY_IDS:
-        return
+
+def normalize_category_slug(category: str) -> str:
+    cleaned = (category or "").strip().lower()
+    return CATEGORY_NAME_MAP.get(cleaned, cleaned)
+
+
+async def _validate_category(db: AsyncSession, user_id: UUID, category: str) -> str:
+    slug = normalize_category_slug(category)
+    if slug in DEFAULT_CATEGORY_IDS:
+        return slug
     owned = await db.scalar(select(UserCategory.id).where(
-        UserCategory.user_id == user_id, UserCategory.slug == category,
+        UserCategory.user_id == user_id, UserCategory.slug == slug,
     ).with_for_update(read=True))
-    if owned is None:
-        raise HTTPException(422, "Category must be a default category or one of your custom categories")
+    if owned is not None:
+        return slug
+    owned_by_name = await db.scalar(select(UserCategory.slug).where(
+        UserCategory.user_id == user_id, func.lower(UserCategory.name) == (category or "").strip().lower(),
+    ).with_for_update(read=True))
+    if owned_by_name is not None:
+        return owned_by_name
+    raise HTTPException(422, "Category must be a default category or one of your custom categories")
 
 
 async def _validate_allocation(
@@ -59,12 +87,12 @@ async def _validate_allocation(
 
 async def create_personal_expense(db: AsyncSession, user_id: UUID, payload: PersonalExpenseCreate) -> Expense:
     async with db.begin():
-        await _validate_category(db, user_id, payload.category)
+        valid_category = await _validate_category(db, user_id, payload.category)
         payer_id = payload.paid_by or user_id
         await _validate_allocation(db, user_id, payload.amount, payer_id, payload.splits)
         expense = Expense(
             user_id=user_id, group_id=None, paid_by=payer_id,
-            amount=payload.amount, category=payload.category, note=payload.note,
+            amount=payload.amount, category=valid_category, note=payload.note,
             expense_date=payload.expense_date,
             splits=[ExpenseSplit(user_id=s.user_id, amount=s.amount, is_settled=False) for s in payload.splits],
         )
@@ -91,7 +119,7 @@ async def update_personal_expense(db: AsyncSession, user_id: UUID, expense_id: U
         updates = payload.model_dump(exclude_unset=True, exclude={"splits"})
         # A deleted category remains a valid unchanged legacy reference.
         if "category" in updates and updates["category"] != expense.category:
-            await _validate_category(db, user_id, updates["category"])
+            updates["category"] = await _validate_category(db, user_id, updates["category"])
         amount = updates.get("amount", expense.amount)
         payer_id = updates.get("paid_by", expense.paid_by) or user_id
         splits = payload.splits if "splits" in payload.model_fields_set else [
@@ -338,7 +366,7 @@ async def create_friend_expense(
         if not has_access:
             raise HTTPException(403, "You can only share expenses with accepted friends or contacts")
 
-        await _validate_category(db, user_id, payload.category)
+        valid_category = await _validate_category(db, user_id, payload.category)
 
         two_dp = Decimal("0.01")
         if payload.splits:
@@ -371,7 +399,7 @@ async def create_friend_expense(
             group_id=None,
             paid_by=payer_id,
             amount=payload.amount,
-            category=payload.category,
+            category=valid_category,
             note=payload.note,
             expense_date=payload.expense_date,
             splits=splits_to_create,
@@ -439,7 +467,7 @@ async def update_friend_expense(
 
         updates = payload.model_dump(exclude_unset=True, exclude={"splits", "split_type"})
         if "category" in updates and updates["category"] != expense.category:
-            await _validate_category(db, user_id, updates["category"])
+            updates["category"] = await _validate_category(db, user_id, updates["category"])
 
         amount = updates.get("amount", expense.amount)
         payer_id = updates.get("paid_by", expense.paid_by) or expense.user_id

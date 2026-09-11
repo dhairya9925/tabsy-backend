@@ -753,7 +753,7 @@ async def create_group_expense(
                 detail="Cannot add expenses to a locked monthly settlement period",
             )
 
-        await _validate_category(db, caller_id, payload.category)
+        valid_category = await _validate_category(db, caller_id, payload.category)
 
         members_stmt = select(GroupMember.user_id).where(GroupMember.group_id == group_id)
         all_member_ids = set((await db.execute(members_stmt)).scalars().all())
@@ -810,7 +810,7 @@ async def create_group_expense(
             user_id=caller_id,
             paid_by=payer_id,
             amount=Decimal(str(payload.amount)),
-            category=payload.category,
+            category=valid_category,
             note=payload.note,
             expense_date=exp_date,
             status=payload.status or "submitted",
@@ -860,7 +860,7 @@ async def bulk_create_group_expenses(
                     detail=f"Cannot add expenses to locked month {exp_date.month}/{exp_date.year}",
                 )
 
-            await _validate_category(db, caller_id, exp_payload.category)
+            valid_category = await _validate_category(db, caller_id, exp_payload.category)
 
             splits_to_insert = []
             if exp_payload.splits:
@@ -901,7 +901,7 @@ async def bulk_create_group_expenses(
                 user_id=caller_id,
                 paid_by=payer_id,
                 amount=Decimal(str(exp_payload.amount)),
-                category=exp_payload.category,
+                category=valid_category,
                 note=exp_payload.note,
                 expense_date=exp_date,
                 status=exp_payload.status or "submitted",
@@ -1000,8 +1000,7 @@ async def update_group_expense(
             expense.expense_date = new_date
 
         if payload.category is not None and payload.category != expense.category:
-            await _validate_category(db, caller_id, payload.category)
-            expense.category = payload.category
+            expense.category = await _validate_category(db, caller_id, payload.category)
 
         if payload.amount is not None:
             expense.amount = Decimal(str(payload.amount))
