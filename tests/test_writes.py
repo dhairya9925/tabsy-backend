@@ -90,11 +90,17 @@ async def category(client, name="Hobbies", headers=None):
 @pytest.mark.asyncio
 async def test_profile_update(write_client, write_db):
     data = success(await write_client.patch("/api/v1/users/me", headers=bearer(), json={
-        "display_name": " Renamed ", "avatar_url": "https://example.test/avatar.png",
+        "display_name": " Renamed ", "avatar_url": "avatar-1",
     }))
     assert data["display_name"] == "Renamed"
-    assert data["avatar_url"] == "https://example.test/avatar.png"
+    assert data["avatar_url"] == "avatar-1"
     assert data["email"] == "writer@example.test"
+
+    # Invalid avatar ID should fail
+    resp = await write_client.patch("/api/v1/users/me", headers=bearer(), json={"avatar_url": "invalid-avatar"})
+    assert resp.status_code == 422
+
+    # Setting avatar to None should succeed
     success(await write_client.patch("/api/v1/users/me", headers=bearer(), json={"avatar_url": None}))
     async with write_db() as db:
         own = await db.scalar(select(Profile).where(Profile.user_id == USER_ID))
