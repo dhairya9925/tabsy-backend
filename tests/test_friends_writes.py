@@ -15,7 +15,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -436,4 +436,91 @@ async def test_shadow_profile_create_and_merge(friends_db):
             headers=charlie_token,
         )
         assert bad_merge.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stale_friend_request_cleanup_after_account_recreation(friends_db):
+    """
+    Test the exact bug scenario:
+    1. Account A sends friend request to Account B.
+    2. Account B is deleted manually (profile removed).
+    3. Account B is re-created with new UUID but same email.
+    4. Account B sends friend request to Account A, and A accepts.
+    5. Verify stale request does not appear in Account A's 'sent' tab and is cleaned up from DB.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        user_d_old = uuid.UUID("dddddddd-4444-4444-8444-444444444441")
+        user_d_new = uuid.UUID("dddddddd-4444-4444-8444-444444444442")
+        dave_email = "dave@example.test"
+
+        alice_token = bearer(USER_A, email="alice@example.test")
+
+        # Step 1: Create old Dave profile
+        async with friends_db() as db:
+            db.add(Profile(user_id=user_d_old, display_name="Dave Old", email=dave_email))
+            await db.commit()
+
+        # Alice sends friend request to Dave Old
+        req_res = await client.post(
+            "/api/v1/friends/request",
+            headers=alice_token,
+            json={"email": dave_email},
+        )
+        assert req_res.status_code == 201
+        old_friendship_id = req_res.json()["data"]["id"]
+
+        # Verify sent tab shows the request
+        sent_before = await client.get("/api/v1/friends/?status=sent", headers=alice_token)
+        assert sent_before.status_code == 200
+        assert len(sent_before.json()["data"]) == 1
+
+        # Step 2: Dave Old account is deleted manually (e.g. Profile deleted without running app cascade)
+        async with friends_db() as db:
+            await db.execute(delete(Profile).where(Profile.user_id == user_d_old))
+            await db.commit()
+
+        # Step 3: Dave registers fresh account with new UUID and same email
+        async with friends_db() as db:
+            db.add(Profile(user_id=user_d_new, display_name="Dave New", email=dave_email))
+            await db.commit()
+
+        dave_new_token = bearer(user_d_new, email=dave_email)
+
+        # Step 4: Dave New sends friend request to Alice
+        new_req_res = await client.post(
+            "/api/v1/friends/request",
+            headers=dave_new_token,
+            json={"email": "alice@example.test"},
+        )
+        assert new_req_res.status_code == 201
+        new_friendship_id = new_req_res.json()["data"]["id"]
+
+        # Alice accepts Dave New's request
+        accept_res = await client.post(
+            f"/api/v1/friends/{new_friendship_id}/accept",
+            headers=alice_token,
+        )
+        assert accept_res.status_code == 200
+
+        # Step 5: Verify Alice's 'sent' tab does NOT contain the old request
+        sent_after = await client.get("/api/v1/friends/?status=sent", headers=alice_token)
+        assert sent_after.status_code == 200
+        assert len(sent_after.json()["data"]) == 0
+
+        # Verify Alice's 'friends' tab contains Dave New
+        friends_res = await client.get("/api/v1/friends/?status=accepted", headers=alice_token)
+        assert friends_res.status_code == 200
+        assert len(friends_res.json()["data"]) == 1
+        assert friends_res.json()["data"][0]["profile"]["email"] == dave_email
+
+        # Verify Alice sending request to Dave now returns 409 Conflict
+        dup_req = await client.post(
+            "/api/v1/friends/request",
+            headers=alice_token,
+            json={"email": dave_email},
+        )
+        assert dup_req.status_code == 409
+        assert "already friends" in dup_req.json()["error"]
+
 

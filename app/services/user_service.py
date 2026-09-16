@@ -1,6 +1,6 @@
 from typing import Sequence
 from uuid import UUID
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
@@ -114,10 +114,63 @@ async def get_user_friends_with_profiles(
     profiles_res = await db.execute(profiles_stmt)
     profiles_map = {p.user_id: p for p in profiles_res.scalars().all()}
 
-    return [
-        (f, profiles_map.get(f.friend_id if f.user_id == user_id else f.user_id))
-        for f in friends
-    ]
+    # Determine accepted friends to avoid showing pending/sent requests for existing friends
+    accepted_ids: set[UUID] = set()
+    accepted_emails: set[str] = set()
+    if status_lower in ("pending", "sent"):
+        accepted_stmt = select(Friend).where(
+            (Friend.user_id == user_id) | (Friend.friend_id == user_id),
+            Friend.status == "accepted",
+        )
+        accepted_records = (await db.execute(accepted_stmt)).scalars().all()
+        accepted_ids = {
+            f.friend_id if f.user_id == user_id else f.user_id
+            for f in accepted_records
+        }
+        if accepted_ids:
+            acc_prof_stmt = select(Profile.email).where(
+                Profile.user_id.in_(accepted_ids),
+                Profile.email.is_not(None),
+            )
+            acc_emails_res = await db.execute(acc_prof_stmt)
+            accepted_emails = {
+                e.strip().lower() for e in acc_emails_res.scalars().all() if e
+            }
+
+    valid_results: list[tuple[Friend, Profile | None]] = []
+    stale_friend_ids: list[UUID] = []
+
+    for f in friends:
+        cid = f.friend_id if f.user_id == user_id else f.user_id
+        profile = profiles_map.get(cid)
+
+        if status_lower in ("pending", "sent"):
+            # If counterpart profile does not exist, request is orphaned
+            if profile is None:
+                stale_friend_ids.append(f.id)
+                continue
+            # If user is already accepted friends with this counterpart ID
+            if cid in accepted_ids:
+                stale_friend_ids.append(f.id)
+                continue
+            # If user is already accepted friends with this counterpart email
+            if profile.email and profile.email.strip().lower() in accepted_emails:
+                stale_friend_ids.append(f.id)
+                continue
+        elif status_lower == "accepted":
+            if profile is None:
+                continue
+
+        valid_results.append((f, profile))
+
+    if stale_friend_ids:
+        await db.execute(delete(Friend).where(Friend.id.in_(stale_friend_ids)))
+        try:
+            await db.commit()
+        except Exception:
+            await db.flush()
+
+    return valid_results
 
 
 async def check_friendship_or_shadow_access(

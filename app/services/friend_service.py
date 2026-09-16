@@ -44,6 +44,61 @@ async def send_friend_request(
         if target_user_id == current_user_id:
             raise HTTPException(400, "Cannot send friend request to yourself")
 
+        # 1. Proactively clean up any orphaned pending sent requests where friend_id has no profile
+        orphan_friends_stmt = (
+            select(Friend)
+            .where(
+                Friend.user_id == current_user_id,
+                Friend.status == "pending",
+                ~Friend.friend_id.in_(select(Profile.user_id)),
+            )
+            .with_for_update()
+        )
+        orphans = (await db.execute(orphan_friends_stmt)).scalars().all()
+        for orphan in orphans:
+            await db.delete(orphan)
+
+        # 2. Check if already friends with a user having the same email, and clean stale pending
+        if profile and profile.email:
+            clean_target_email = profile.email.strip().lower()
+            same_email_accepted_stmt = (
+                select(Friend)
+                .join(
+                    Profile,
+                    or_(
+                        and_(Friend.friend_id == Profile.user_id, Friend.user_id == current_user_id),
+                        and_(Friend.user_id == Profile.user_id, Friend.friend_id == current_user_id),
+                    ),
+                )
+                .where(
+                    Friend.status == "accepted",
+                    Profile.email == clean_target_email,
+                )
+            )
+            existing_accepted = (await db.execute(same_email_accepted_stmt)).scalar_one_or_none()
+            if existing_accepted:
+                raise HTTPException(409, "You are already friends with this user")
+
+            stale_same_email_stmt = (
+                select(Friend)
+                .join(
+                    Profile,
+                    or_(
+                        and_(Friend.friend_id == Profile.user_id, Friend.user_id == current_user_id),
+                        and_(Friend.user_id == Profile.user_id, Friend.friend_id == current_user_id),
+                    ),
+                )
+                .where(
+                    Friend.status == "pending",
+                    Profile.email == clean_target_email,
+                    Profile.user_id != target_user_id,
+                )
+                .with_for_update()
+            )
+            stale_requests = (await db.execute(stale_same_email_stmt)).scalars().all()
+            for stale in stale_requests:
+                await db.delete(stale)
+
         stmt = select(Friend).where(
             or_(
                 and_(Friend.user_id == current_user_id, Friend.friend_id == target_user_id),
@@ -124,6 +179,64 @@ async def accept_friend_request(
 
         counterpart_id = friend.user_id
         profile = await get_profile_by_user_id(db, counterpart_id)
+
+        # 1. Clean up any other friend requests directly between current_user_id and counterpart_id (e.g. reverse requests)
+        other_friends_stmt = (
+            select(Friend)
+            .where(
+                or_(
+                    and_(Friend.user_id == current_user_id, Friend.friend_id == counterpart_id),
+                    and_(Friend.user_id == counterpart_id, Friend.friend_id == current_user_id),
+                ),
+                Friend.id != friendship_id,
+            )
+            .with_for_update()
+        )
+        other_friends = (await db.execute(other_friends_stmt)).scalars().all()
+        for other in other_friends:
+            await db.delete(other)
+
+        # 2. If counterpart has an email, delete any pending requests involving current_user and any account with this email
+        if profile and profile.email:
+            counterpart_email = profile.email.strip().lower()
+            stale_email_stmt = (
+                select(Friend)
+                .join(
+                    Profile,
+                    or_(
+                        and_(Friend.friend_id == Profile.user_id, Friend.user_id == current_user_id),
+                        and_(Friend.user_id == Profile.user_id, Friend.friend_id == current_user_id),
+                    ),
+                )
+                .where(
+                    Friend.status == "pending",
+                    Friend.id != friendship_id,
+                    Profile.email == counterpart_email,
+                )
+                .with_for_update()
+            )
+            stale_email_rows = (await db.execute(stale_email_stmt)).scalars().all()
+            for row in stale_email_rows:
+                await db.delete(row)
+
+        # 3. Proactively clean up any orphaned pending requests where counterpart profile is gone
+        orphan_stmt = (
+            select(Friend)
+            .where(
+                or_(Friend.user_id == current_user_id, Friend.friend_id == current_user_id),
+                Friend.status == "pending",
+                or_(
+                    ~Friend.friend_id.in_(select(Profile.user_id)),
+                    ~Friend.user_id.in_(select(Profile.user_id)),
+                ),
+            )
+            .with_for_update()
+        )
+        orphans = (await db.execute(orphan_stmt)).scalars().all()
+        for orphan in orphans:
+            await db.delete(orphan)
+
+        await db.flush()
         return friend, profile
 
 
