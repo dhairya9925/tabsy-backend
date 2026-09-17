@@ -107,28 +107,7 @@ def unwrap(response, expected_status=200):
     return body["data"]
 
 
-@pytest.mark.asyncio
-async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
-    """
-    Verifies exact mathematical parity with the July 2026 spreadsheet:
-    - 7 members
-    - Actual rent: ₹13,500 -> Ceil rounded to ₹1,929 each = ₹13,503
-    - Shared day-to-day expenses: ₹16,520 -> ₹2,360 each
-    - Total expenses: ₹30,023
-    - Total paid: ₹16,521
-    - Total balance: ₹13,502
-    - Yash overpaid: -₹3,979
-    - Krish owes: +₹1,565
-    - Tushar owes: +₹2,704
-    - Dhairya owes: +₹2,205
-    - Parth owes: +₹3,629
-    - Uday owes: +₹3,619
-    - Vaibhav owes: +₹3,759
-    - Members to contribute: ₹17,481
-    - Over-contributed: ₹3,979
-    - Remaining for bills: ₹13,502
-    """
-    # 1. Create Shared Living Group
+async def _seed_july_2026_group(client, ledger_db) -> str:
     res = await client.post(
         "/api/v1/groups/",
         headers=bearer(UID_YASH),
@@ -141,7 +120,6 @@ async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
     group_data = unwrap(res, 201)
     group_id = group_data["id"]
 
-    # 2. Add remaining 6 members to group
     for uid, _, email in ALL_MEMBERS[1:]:
         res = await client.post(
             f"/api/v1/groups/{group_id}/members",
@@ -150,15 +128,6 @@ async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
         )
         unwrap(res, 201)
 
-    # 3. Add July 2026 day-to-day shared expenses fronted by members:
-    # Yash fronted ₹8,268
-    # Krish fronted ₹2,724
-    # Dhairya fronted ₹2,084
-    # Tushar fronted ₹1,585
-    # Uday fronted ₹670
-    # Parth fronted ₹660
-    # Vaibhav fronted ₹530
-    # Total fronted = ₹16,521. (Note: shared expense total is ₹16,520 with ₹1 extra fronted)
     payments = [
         (UID_YASH, Decimal("8268.00"), "Groceries & Supermarket"),
         (UID_KRISH, Decimal("2724.00"), "Electricity & Gas"),
@@ -172,7 +141,6 @@ async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
     all_member_ids = [m[0] for m in ALL_MEMBERS]
     split_count = len(all_member_ids)
 
-    # Create expenses in July 2026
     async with ledger_db() as db:
         for payer_id, amount, note in payments:
             base_split = (amount / Decimal(split_count)).quantize(Decimal("0.01"))
@@ -195,6 +163,32 @@ async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
             )
             db.add(exp)
         await db.commit()
+
+    return group_id
+
+
+@pytest.mark.asyncio
+async def test_monthly_ledger_july_2026_exact_parity(client, ledger_db):
+    """
+    Verifies exact mathematical parity with the July 2026 spreadsheet:
+    - 7 members
+    - Actual rent: ₹13,500 -> Ceil rounded to ₹1,929 each = ₹13,503
+    - Shared day-to-day expenses: ₹16,520 -> ₹2,360 each
+    - Total expenses: ₹30,023
+    - Total paid: ₹16,521
+    - Total balance: ₹13,502
+    - Yash overpaid: -₹3,979
+    - Krish owes: +₹1,565
+    - Tushar owes: +₹2,704
+    - Dhairya owes: +₹2,205
+    - Parth owes: +₹3,629
+    - Uday owes: +₹3,619
+    - Vaibhav owes: +₹3,759
+    - Members to contribute: ₹17,481
+    - Over-contributed: ₹3,979
+    - Remaining for bills: ₹13,502
+    """
+    group_id = await _seed_july_2026_group(client, ledger_db)
 
     # 4. Fetch Monthly Ledger as Krish
     res = await client.get(
@@ -378,3 +372,177 @@ async def test_monthly_ledger_authorization_and_validation(client, ledger_db):
         headers=bearer(UID_YASH),
     )
     assert res_422.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_record_coordinator_disbursements(client, ledger_db):
+    """
+    Verifies coordinator disbursements for vendor bills (Landlord rent) and member refunds:
+    1. Vendor bill payout (₹13,502) clears external rent, increases bill_progress_pct to 100%,
+       and crucially DOES NOT change Yash's personal out-of-pocket spend (zero double counting).
+    2. Member refund payout (₹3,979) marks member status as 'refunded' and settles their my_summary.
+    """
+    group_id = await _seed_july_2026_group(client, ledger_db)
+
+    # 1. Disburse ₹13,502 to Landlord from pooled cash
+    res_bill = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/disbursements?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={
+            "disbursement_type": "vendor_bill",
+            "amount": 13502.00,
+            "category": "rent",
+            "recipient_name": "Landlord",
+            "payment_method": "bank_transfer",
+            "reference_note": "July Rent NEFT Payment",
+        },
+    )
+    bill_data = unwrap(res_bill, 200)
+    assert bill_data["disbursement_type"] == "vendor_bill"
+    assert Decimal(str(bill_data["amount"])) == Decimal("13502.00")
+    assert bill_data["category"] == "rent"
+    assert bill_data["recipient_name"] == "Landlord"
+
+    # Query ledger to verify vendor bill cleared
+    res_ledger = await client.get(
+        f"/api/v1/groups/{group_id}/monthly-ledger?month=7&year=2026",
+        headers=bearer(UID_YASH),
+    )
+    data = unwrap(res_ledger, 200)
+    summary = data["summary"]
+    coord_summary = data["coordinator_summary"]
+
+    assert Decimal(str(summary["total_disbursed"])) == Decimal("13502.00")
+    assert Decimal(str(summary["total_vendor_bills_paid"])) == Decimal("13502.00")
+    assert summary["bill_progress_pct"] == 100.0
+
+    # Rent bill is cleared
+    assert len(coord_summary["external_bills_pending"]) == 1
+    rent_bill = coord_summary["external_bills_pending"][0]
+    assert rent_bill["status"] == "cleared"
+    assert Decimal(str(rent_bill["remaining_amount"])) == Decimal("0.00")
+    assert Decimal(str(coord_summary["total_external_bills_pending"])) == Decimal("0.00")
+
+    # Double-counting check: Yash's total_paid and balance remain untouched!
+    yash_item = next(m for m in data["members"] if m["user_id"] == str(UID_YASH))
+    assert Decimal(str(yash_item["total_paid"])) == Decimal("8268.00")
+    yash_balance = Decimal(str(yash_item["balance"]))
+    assert yash_balance < 0
+
+    # 2. Disburse refund to Yash for his exact overpayment
+    refund_amt = float(abs(yash_balance))
+    res_refund = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/disbursements?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={
+            "disbursement_type": "member_refund",
+            "amount": refund_amt,
+            "recipient_user_id": str(UID_YASH),
+            "category": "refund",
+            "payment_method": "upi",
+            "reference_note": "July Yash Fronted Costs Reimbursement",
+        },
+    )
+    refund_data = unwrap(res_refund, 200)
+    assert refund_data["disbursement_type"] == "member_refund"
+    assert refund_data["recipient_user_id"] == str(UID_YASH)
+
+    # Query ledger as Yash: verify status is refunded and my_summary is settled
+    res_yash = await client.get(
+        f"/api/v1/groups/{group_id}/monthly-ledger?month=7&year=2026",
+        headers=bearer(UID_YASH),
+    )
+    data_yash = unwrap(res_yash, 200)
+    assert data_yash["my_summary"]["status"] == "refunded"
+    assert data_yash["my_summary"]["action"] == "settled"
+    assert Decimal(str(data_yash["my_summary"]["amount"])) == Decimal("0.00")
+
+    coord_summary2 = data_yash["coordinator_summary"]
+    assert coord_summary2["members_to_refund"][0]["status"] == "refunded"
+    assert Decimal(str(coord_summary2["members_to_refund"][0]["remaining_refund"])) == Decimal("0.00")
+    assert Decimal(str(coord_summary2["total_to_refund"])) == Decimal("0.00")
+    assert len(data_yash["disbursements"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_monthly_ledger_lock_and_rollover(client, ledger_db):
+    """
+    Verifies that locking a month freezes the cycle and optionally rolls over
+    unrefunded credits to the subsequent month as a credit adjustment.
+    """
+    group_id = await _seed_july_2026_group(client, ledger_db)
+
+    # Lock July with rollover enabled (Yash is owed money)
+    res_lock = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/lock?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={"rollover_unclaimed_refunds": True, "note": "July finalized with rollover"},
+    )
+    lock_data = unwrap(res_lock, 200)
+    assert lock_data["status"] == "locked"
+
+    # Verify July is locked
+    res_july = await client.get(
+        f"/api/v1/groups/{group_id}/monthly-ledger?month=7&year=2026",
+        headers=bearer(UID_YASH),
+    )
+    assert unwrap(res_july, 200)["settlement_status"] == "locked"
+
+    # Query August (month 8): Yash should have rollover credit in total_paid!
+    res_aug = await client.get(
+        f"/api/v1/groups/{group_id}/monthly-ledger?month=8&year=2026",
+        headers=bearer(UID_YASH),
+    )
+    data_aug = unwrap(res_aug, 200)
+    yash_aug = next(m for m in data_aug["members"] if m["user_id"] == str(UID_YASH))
+    assert Decimal(str(yash_aug["total_paid"])) > 0
+
+
+@pytest.mark.asyncio
+async def test_disbursement_authorization_and_validation(client, ledger_db):
+    """
+    Verifies authorization rules:
+    - Non-admin cannot record disbursements (403)
+    - Non-admin cannot lock monthly ledger (403)
+    - Missing recipient on member_refund fails validation (422)
+    - Cannot record disbursement in a locked settlement (400)
+    """
+    group_id = await _seed_july_2026_group(client, ledger_db)
+
+    # Krish (member) cannot record disbursement
+    res_403 = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/disbursements?month=7&year=2026",
+        headers=bearer(UID_KRISH),
+        json={"disbursement_type": "vendor_bill", "amount": 100.0, "category": "rent"},
+    )
+    assert res_403.status_code == 403
+
+    # Krish cannot lock month
+    res_lock_403 = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/lock?month=7&year=2026",
+        headers=bearer(UID_KRISH),
+        json={"rollover_unclaimed_refunds": True},
+    )
+    assert res_lock_403.status_code == 403
+
+    # Missing recipient on member_refund
+    res_422 = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/disbursements?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={"disbursement_type": "member_refund", "amount": 500.0},
+    )
+    assert res_422.status_code == 422
+
+    # Lock month then attempt disbursement
+    await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/lock?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={"rollover_unclaimed_refunds": False},
+    )
+    res_400 = await client.post(
+        f"/api/v1/groups/{group_id}/monthly-ledger/disbursements?month=7&year=2026",
+        headers=bearer(UID_YASH),
+        json={"disbursement_type": "vendor_bill", "amount": 100.0, "category": "rent"},
+    )
+    assert res_400.status_code == 400
+

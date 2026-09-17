@@ -26,6 +26,9 @@ from app.schemas.group import (
     GroupUpdate,
     MemberProfileResponse,
     MonthlyLedgerContributionRecord,
+    MonthlyLedgerDisbursementCreate,
+    MonthlyLedgerDisbursementResponse,
+    MonthlyLedgerLockRequest,
     MonthlyLedgerResponse,
 )
 from app.schemas.settlement import (
@@ -58,7 +61,9 @@ from app.services.group_service import (
     get_multi_month_settlements,
     get_user_groups,
     join_group,
+    lock_monthly_ledger,
     record_monthly_ledger_contribution,
+    record_monthly_ledger_disbursement,
     remove_group_member,
     set_member_monthly_exclusion,
     settle_group_expenses,
@@ -560,5 +565,38 @@ async def post_monthly_ledger_contribution(
     """Record a member's payment contribution for the monthly ledger cycle."""
     status_obj = await record_monthly_ledger_contribution(db, id, month, year, current_user.id, payload)
     return ResponseEnvelope(data=MemberMonthlyStatusResponse.model_validate(status_obj))
+
+
+@router.post("/{id}/monthly-ledger/disbursements", response_model=ResponseEnvelope[MonthlyLedgerDisbursementResponse])
+async def post_monthly_ledger_disbursement(
+    id: UUID,
+    month: Annotated[int, Query(ge=1, le=12)],
+    year: Annotated[int, Query(ge=2020)],
+    payload: MonthlyLedgerDisbursementCreate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[MonthlyLedgerDisbursementResponse]:
+    """
+    Record a coordinator disbursement:
+    - vendor_bill: Paying an external bill (e.g. Landlord Rent) from pooled funds.
+    - member_refund: Disbursing a refund to an overpaying member.
+    """
+    disbursement = await record_monthly_ledger_disbursement(db, id, month, year, current_user.id, payload)
+    return ResponseEnvelope(data=disbursement)
+
+
+@router.post("/{id}/monthly-ledger/lock", response_model=ResponseEnvelope[MonthlySettlementResponse])
+async def post_monthly_ledger_lock(
+    id: UUID,
+    month: Annotated[int, Query(ge=1, le=12)],
+    year: Annotated[int, Query(ge=2020)],
+    payload: MonthlyLedgerLockRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[MonthlySettlementResponse]:
+    """Lock the monthly ledger cycle and optionally roll over unrefunded credits to next month."""
+    settlement = await lock_monthly_ledger(db, id, month, year, current_user.id, payload)
+    return ResponseEnvelope(data=settlement)
+
 
 

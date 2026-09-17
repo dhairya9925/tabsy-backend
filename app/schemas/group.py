@@ -223,14 +223,18 @@ class CoordinatorPendingRefund(BaseModel):
     display_name: str
     avatar_url: str | None = None
     amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
-    status: str = "credited"
+    refunded_amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    remaining_refund: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "credited"  # "credited" | "refunded"
 
 
 class CoordinatorPendingBill(BaseModel):
     category: str
     description: str
     amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
-    status: str = "unpaid"
+    paid_amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    remaining_amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "unpaid"  # "unpaid" | "partially_paid" | "cleared"
 
 
 class CoordinatorChecklist(BaseModel):
@@ -255,6 +259,51 @@ class MonthlyLedgerSummary(BaseModel):
     remaining_for_bills: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
     collection_progress_pct: float = 0.0
     bill_progress_pct: float = 0.0
+    total_disbursed: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_vendor_bills_paid: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_refunds_paid: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+
+
+class MonthlyLedgerDisbursementCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    disbursement_type: str = Field(..., pattern=r"^(vendor_bill|member_refund)$")
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    recipient_user_id: UUID | None = None
+    recipient_name: str | None = Field(default=None, max_length=120)
+    category: str = Field(default="rent", max_length=50)
+    payment_method: str = Field(default="upi", max_length=50)
+    reference_note: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_disbursement(self) -> "MonthlyLedgerDisbursementCreate":
+        if self.disbursement_type == "member_refund" and not self.recipient_user_id:
+            raise ValueError("recipient_user_id is required for member_refund disbursements")
+        return self
+
+
+class MonthlyLedgerDisbursementResponse(BaseModel):
+    id: UUID
+    settlement_id: UUID
+    group_id: UUID
+    disbursement_type: str
+    amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    recipient_user_id: UUID | None = None
+    recipient_name: str | None = None
+    category: str
+    payment_method: str
+    reference_note: str | None = None
+    recorded_by: UUID
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MonthlyLedgerLockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    rollover_unclaimed_refunds: bool = True
+    note: str | None = Field(default=None, max_length=255)
 
 
 class MonthlyLedgerResponse(BaseModel):
@@ -268,6 +317,7 @@ class MonthlyLedgerResponse(BaseModel):
     members: list[MemberLedgerItem] = Field(default_factory=list)
     my_summary: UserLedgerActionSummary | None = None
     coordinator_summary: CoordinatorChecklist | None = None
+    disbursements: list[MonthlyLedgerDisbursementResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

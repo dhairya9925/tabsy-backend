@@ -15,6 +15,8 @@ from app.models.profile import Profile
 from app.models.settlement import (
     MemberMonthlyExclusion,
     MemberMonthlyStatus,
+    MonthlyLedgerDisbursement,
+    MonthlyRolloverCredit,
     MonthlySettlement,
 )
 from app.schemas.group import (
@@ -34,6 +36,9 @@ from app.schemas.group import (
     MemberLedgerItem,
     MemberObligationBreakdown,
     MonthlyLedgerContributionRecord,
+    MonthlyLedgerDisbursementCreate,
+    MonthlyLedgerDisbursementResponse,
+    MonthlyLedgerLockRequest,
     MonthlyLedgerResponse,
     MonthlyLedgerSummary,
     UserLedgerActionSummary,
@@ -41,6 +46,7 @@ from app.schemas.group import (
 from app.schemas.settlement import (
     MemberMonthlyExclusionWrite,
     MemberMonthlyStatusCreate,
+    MonthlySettlementResponse,
 )
 from app.services.expense_service import _validate_category
 from app.services.user_service import lookup_user_by_email
@@ -1460,12 +1466,55 @@ async def get_monthly_ledger(
     else:
         per_member_rent = Decimal("0.00")
 
+    # 4b. Fetch active rollover credits for this month
+    rollover_stmt = select(MonthlyRolloverCredit).where(
+        MonthlyRolloverCredit.group_id == group_id,
+        MonthlyRolloverCredit.month == month,
+        MonthlyRolloverCredit.year == year,
+        MonthlyRolloverCredit.status == "active",
+    )
+    rollover_credits = (await db.execute(rollover_stmt)).scalars().all()
+    rollover_map: dict[UUID, Decimal] = {
+        rc.user_id: Decimal(str(rc.amount)).quantize(Decimal("0.01"))
+        for rc in rollover_credits
+    }
+
+    # 4c. Fetch disbursements for this settlement
+    disbursement_items: list[MonthlyLedgerDisbursementResponse] = []
+    vendor_bill_disbursements: dict[str, Decimal] = {}
+    member_refund_disbursements: dict[UUID, Decimal] = {}
+    total_disbursed = Decimal("0.00")
+    total_vendor_bills_paid = Decimal("0.00")
+    total_refunds_paid = Decimal("0.00")
+
+    if settlement:
+        disb_stmt = (
+            select(MonthlyLedgerDisbursement)
+            .where(MonthlyLedgerDisbursement.settlement_id == settlement.id)
+            .order_by(MonthlyLedgerDisbursement.created_at.asc())
+        )
+        disbursements_list = (await db.execute(disb_stmt)).scalars().all()
+        for d in disbursements_list:
+            d_amt = Decimal(str(d.amount)).quantize(Decimal("0.01"))
+            total_disbursed += d_amt
+            if d.disbursement_type == "vendor_bill":
+                total_vendor_bills_paid += d_amt
+                vendor_bill_disbursements[d.category] = vendor_bill_disbursements.get(d.category, Decimal("0.00")) + d_amt
+            elif d.disbursement_type == "member_refund" and d.recipient_user_id:
+                total_refunds_paid += d_amt
+                member_refund_disbursements[d.recipient_user_id] = (
+                    member_refund_disbursements.get(d.recipient_user_id, Decimal("0.00")) + d_amt
+                )
+            disbursement_items.append(MonthlyLedgerDisbursementResponse.model_validate(d))
+
     # 5. Fetch expenses for the month
     expenses = await get_monthly_group_expenses(db, group_id, user_id, month, year)
 
     expense_shares: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
     adjustments: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
-    total_paid: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
+    total_paid: dict[UUID, Decimal] = {
+        m.user_id: rollover_map.get(m.user_id, Decimal("0.00")) for m, _ in members_with_profiles
+    }
 
     active_member_ids = {m.user_id for m, _ in members_with_profiles if exclusion_map.get(m.user_id) != "full"}
 
@@ -1515,10 +1564,17 @@ async def get_monthly_ledger(
 
         status_val = member_statuses.get(m.user_id)
         if not status_val:
-            if bal <= 0:
-                status_val = "credited" if bal < 0 else "confirmed"
+            if bal < 0:
+                refunded_amt = member_refund_disbursements.get(m.user_id, Decimal("0.00"))
+                status_val = "refunded" if (refunded_amt >= abs(bal) and refunded_amt > 0) else "credited"
+            elif bal == 0:
+                status_val = "confirmed"
             else:
                 status_val = "pending"
+        elif bal < 0:
+            refunded_amt = member_refund_disbursements.get(m.user_id, Decimal("0.00"))
+            if refunded_amt >= abs(bal) and refunded_amt > 0:
+                status_val = "refunded"
 
         display_name = (
             p.display_name if (p and p.display_name) else (p.email if (p and p.email) else f"Member {str(m.user_id)[:6]}")
@@ -1557,7 +1613,8 @@ async def get_monthly_ledger(
     remaining_for_bills = members_to_contribute - over_contributed
 
     coll_pct = round(float(tot_paid_all) / float(grand_total) * 100, 1) if grand_total > 0 else 100.0
-    bill_pct = round(float(tot_shared) / float(grand_total) * 100, 1) if grand_total > 0 else 100.0
+    total_cleared_bills = tot_shared + total_vendor_bills_paid
+    bill_pct = round(float(total_cleared_bills) / float(grand_total) * 100, 1) if grand_total > 0 else 100.0
 
     summary = MonthlyLedgerSummary(
         total_rent=tot_rent,
@@ -1571,6 +1628,9 @@ async def get_monthly_ledger(
         remaining_for_bills=remaining_for_bills,
         collection_progress_pct=min(100.0, max(0.0, coll_pct)),
         bill_progress_pct=min(100.0, max(0.0, bill_pct)),
+        total_disbursed=total_disbursed,
+        total_vendor_bills_paid=total_vendor_bills_paid,
+        total_refunds_paid=total_refunds_paid,
     )
 
     # 9. Caller action summary (my_summary)
@@ -1581,8 +1641,14 @@ async def get_monthly_ledger(
             action = "pay_coordinator"
             amt = caller_item.balance
         elif caller_item.balance < 0:
-            action = "receive_refund"
-            amt = abs(caller_item.balance)
+            ref_done = member_refund_disbursements.get(user_id, Decimal("0.00"))
+            rem_ref = max(Decimal("0.00"), abs(caller_item.balance) - ref_done)
+            if rem_ref == 0 or caller_item.status == "refunded":
+                action = "settled"
+                amt = Decimal("0.00")
+            else:
+                action = "receive_refund"
+                amt = rem_ref
         else:
             action = "settled"
             amt = Decimal("0.00")
@@ -1626,25 +1692,43 @@ async def get_monthly_ledger(
             )
             for item in member_items if item.balance > 0
         ]
-        to_refund = [
-            CoordinatorPendingRefund(
-                user_id=item.user_id,
-                display_name=item.display_name,
-                avatar_url=item.avatar_url,
-                amount=abs(item.balance),
-                status=item.status,
-            )
-            for item in member_items if item.balance < 0
-        ]
+        to_refund = []
+        for item in member_items:
+            if item.balance < 0:
+                ref_amt = member_refund_disbursements.get(item.user_id, Decimal("0.00"))
+                rem_ref = max(Decimal("0.00"), abs(item.balance) - ref_amt)
+                ref_status = "refunded" if (rem_ref == 0 and ref_amt > 0) else "credited"
+                to_refund.append(
+                    CoordinatorPendingRefund(
+                        user_id=item.user_id,
+                        display_name=item.display_name,
+                        avatar_url=item.avatar_url,
+                        amount=abs(item.balance),
+                        refunded_amount=ref_amt,
+                        remaining_refund=rem_ref,
+                        status=ref_status,
+                    )
+                )
 
         ext_bills = []
         if monthly_rent > 0:
+            rent_paid_amt = min(monthly_rent, vendor_bill_disbursements.get("rent", Decimal("0.00")))
+            rent_rem_amt = max(Decimal("0.00"), monthly_rent - rent_paid_amt)
+            if rent_rem_amt == 0:
+                bill_status = "cleared"
+            elif rent_paid_amt > 0:
+                bill_status = "partially_paid"
+            else:
+                bill_status = "unpaid"
+
             ext_bills.append(
                 CoordinatorPendingBill(
                     category="rent",
                     description=f"{calendar.month_name[month]} Landlord Rent",
                     amount=monthly_rent,
-                    status="unpaid",
+                    paid_amount=rent_paid_amt,
+                    remaining_amount=rent_rem_amt,
+                    status=bill_status,
                 )
             )
 
@@ -1652,10 +1736,10 @@ async def get_monthly_ledger(
             members_to_collect=to_collect,
             total_to_collect=members_to_contribute,
             members_to_refund=to_refund,
-            total_to_refund=over_contributed,
+            total_to_refund=sum(r.remaining_refund for r in to_refund),
             net_cash_for_bills=remaining_for_bills,
             external_bills_pending=ext_bills,
-            total_external_bills_pending=sum(b.amount for b in ext_bills),
+            total_external_bills_pending=sum(b.remaining_amount for b in ext_bills),
         )
 
     return MonthlyLedgerResponse(
@@ -1669,6 +1753,7 @@ async def get_monthly_ledger(
         members=member_items,
         my_summary=my_summary,
         coordinator_summary=coordinator_summary,
+        disbursements=disbursement_items,
     )
 
 
@@ -1752,5 +1837,213 @@ async def record_monthly_ledger_contribution(
         db.add(new_status)
         await db.flush()
         return new_status
+
+
+async def record_monthly_ledger_disbursement(
+    db: AsyncSession,
+    group_id: UUID,
+    month: int,
+    year: int,
+    caller_id: UUID,
+    payload: MonthlyLedgerDisbursementCreate,
+) -> MonthlyLedgerDisbursementResponse:
+    """
+    Records a coordinator disbursement for the monthly ledger:
+    - vendor_bill: Paying an external bill (e.g. Landlord rent, maid, electricity) from pooled funds.
+    - member_refund: Disbursing a refund to an overpaying member.
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Month must be between 1 and 12")
+    if year < 2020:
+        raise HTTPException(status_code=422, detail="Year must be 2020 or later")
+
+    async with db.begin():
+        group = await get_group_detail(db, group_id, caller_id)
+
+        caller_role = await db.scalar(
+            select(GroupMember.role).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == caller_id
+            )
+        )
+        if caller_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only group admins / coordinators can record disbursements",
+            )
+
+        settlement_stmt = select(MonthlySettlement).where(
+            MonthlySettlement.group_id == group_id,
+            MonthlySettlement.month == month,
+            MonthlySettlement.year == year,
+        )
+        settlement = (await db.execute(settlement_stmt)).scalar_one_or_none()
+        if not settlement:
+            settlement = MonthlySettlement(
+                group_id=group_id,
+                month=month,
+                year=year,
+                status="open",
+            )
+            db.add(settlement)
+            await db.flush()
+
+        if settlement.status == "locked":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot record disbursements for a locked settlement period",
+            )
+
+        if payload.disbursement_type == "member_refund":
+            target_member = await db.scalar(
+                select(GroupMember.id).where(
+                    GroupMember.group_id == group_id, GroupMember.user_id == payload.recipient_user_id
+                )
+            )
+            if not target_member:
+                raise HTTPException(status_code=404, detail="Recipient user is not a group member")
+
+        disbursement = MonthlyLedgerDisbursement(
+            settlement_id=settlement.id,
+            group_id=group_id,
+            disbursement_type=payload.disbursement_type,
+            amount=payload.amount,
+            recipient_user_id=payload.recipient_user_id,
+            recipient_name=payload.recipient_name,
+            category=payload.category,
+            payment_method=payload.payment_method,
+            reference_note=payload.reference_note,
+            recorded_by=caller_id,
+        )
+        db.add(disbursement)
+        await db.flush()
+
+        if payload.disbursement_type == "member_refund" and payload.recipient_user_id:
+            status_stmt = (
+                select(MemberMonthlyStatus)
+                .where(
+                    MemberMonthlyStatus.settlement_id == settlement.id,
+                    MemberMonthlyStatus.user_id == payload.recipient_user_id,
+                )
+                .with_for_update()
+            )
+            existing_status = (await db.execute(status_stmt)).scalar_one_or_none()
+            if existing_status:
+                existing_status.status = "refunded"
+            else:
+                new_status = MemberMonthlyStatus(
+                    settlement_id=settlement.id,
+                    user_id=payload.recipient_user_id,
+                    status="refunded",
+                )
+                db.add(new_status)
+            await db.flush()
+
+        return MonthlyLedgerDisbursementResponse.model_validate(disbursement)
+
+
+async def lock_monthly_ledger(
+    db: AsyncSession,
+    group_id: UUID,
+    month: int,
+    year: int,
+    caller_id: UUID,
+    payload: MonthlyLedgerLockRequest,
+) -> MonthlySettlementResponse:
+    """
+    Locks a monthly ledger cycle and optionally rolls over unrefunded credits to the next month.
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Month must be between 1 and 12")
+    if year < 2020:
+        raise HTTPException(status_code=422, detail="Year must be 2020 or later")
+
+    async with db.begin():
+        await get_group_detail(db, group_id, caller_id)
+
+        caller_role = await db.scalar(
+            select(GroupMember.role).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == caller_id
+            )
+        )
+        if caller_role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only group admins / coordinators can lock monthly settlements",
+            )
+
+        settlement_stmt = (
+            select(MonthlySettlement)
+            .where(
+                MonthlySettlement.group_id == group_id,
+                MonthlySettlement.month == month,
+                MonthlySettlement.year == year,
+            )
+            .with_for_update()
+        )
+        settlement = (await db.execute(settlement_stmt)).scalar_one_or_none()
+        if not settlement:
+            settlement = MonthlySettlement(
+                group_id=group_id,
+                month=month,
+                year=year,
+                status="locked",
+            )
+            db.add(settlement)
+            await db.flush()
+        else:
+            if settlement.status == "locked":
+                return MonthlySettlementResponse(
+                    id=settlement.id,
+                    group_id=settlement.group_id,
+                    month=settlement.month,
+                    year=settlement.year,
+                    status=settlement.status,
+                    created_at=settlement.created_at,
+                    updated_at=settlement.updated_at,
+                )
+            settlement.status = "locked"
+            settlement.updated_at = datetime.utcnow()
+            await db.flush()
+
+        # Handle rollover credits if requested
+        if payload.rollover_unclaimed_refunds:
+            ledger = await get_monthly_ledger(db, group_id, caller_id, month, year)
+            next_month = month + 1 if month < 12 else 1
+            next_year = year if month < 12 else year + 1
+
+            for member_item in ledger.members:
+                if member_item.balance < 0 and member_item.status != "refunded":
+                    refund_credit = abs(member_item.balance)
+                    existing_credit = await db.scalar(
+                        select(MonthlyRolloverCredit).where(
+                            MonthlyRolloverCredit.group_id == group_id,
+                            MonthlyRolloverCredit.user_id == member_item.user_id,
+                            MonthlyRolloverCredit.month == next_month,
+                            MonthlyRolloverCredit.year == next_year,
+                        )
+                    )
+                    if not existing_credit:
+                        rollover = MonthlyRolloverCredit(
+                            group_id=group_id,
+                            from_settlement_id=settlement.id,
+                            user_id=member_item.user_id,
+                            amount=refund_credit,
+                            month=next_month,
+                            year=next_year,
+                            status="active",
+                        )
+                        db.add(rollover)
+
+            await db.flush()
+
+        return MonthlySettlementResponse(
+            id=settlement.id,
+            group_id=settlement.group_id,
+            month=settlement.month,
+            year=settlement.year,
+            status=settlement.status,
+            created_at=settlement.created_at,
+            updated_at=settlement.updated_at,
+        )
 
 
