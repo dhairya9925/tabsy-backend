@@ -28,6 +28,7 @@ class Group(Base):
         Numeric(10, 2), default=Decimal("0.00"), nullable=True
     )
     sponsor_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invite_code: Mapped[str | None] = mapped_column(Text, unique=True, index=True, nullable=True)
 
     members: Mapped[list["GroupMember"]] = relationship(
         "GroupMember", back_populates="group", cascade="all, delete-orphan"

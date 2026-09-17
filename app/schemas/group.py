@@ -81,8 +81,13 @@ class GroupResponse(BaseModel):
     type: str = "day_to_day"
     monthly_rent: float | None = None
     sponsor_id: str | None = None
+    invite_code: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class GroupJoinRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=128, description="Group invite code or group UUID")
 
 
 class GroupExpenseSplitResponse(BaseModel):

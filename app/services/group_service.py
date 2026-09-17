@@ -1,5 +1,6 @@
 import calendar
 import math
+import secrets
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Sequence
@@ -50,6 +51,14 @@ from app.schemas.settlement import (
 )
 from app.services.expense_service import _validate_category
 from app.services.user_service import lookup_user_by_email
+
+
+INVITE_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # 32 unambiguous characters (no 0,O,1,I)
+
+
+def generate_invite_code(length: int = 10) -> str:
+    """Generate a random human-friendly uppercase alphanumeric invite code."""
+    return "".join(secrets.choice(INVITE_CODE_ALPHABET) for _ in range(length))
 
 
 async def get_user_groups(db: AsyncSession, user_id: UUID) -> Sequence[Group]:
@@ -481,6 +490,16 @@ async def _sync_monthly_rent(
 
 async def create_group(db: AsyncSession, user_id: UUID, payload: GroupCreate) -> Group:
     async with db.begin():
+        # Generate a unique invite code
+        invite_code = generate_invite_code(10)
+        for _ in range(5):
+            existing_code = (await db.execute(
+                select(Group).where(Group.invite_code == invite_code)
+            )).scalar_one_or_none()
+            if not existing_code:
+                break
+            invite_code = generate_invite_code(10)
+
         group = Group(
             name=payload.name,
             description=payload.description,
@@ -488,6 +507,7 @@ async def create_group(db: AsyncSession, user_id: UUID, payload: GroupCreate) ->
             monthly_rent=payload.monthly_rent or Decimal("0.00"),
             sponsor_id=payload.sponsor_id,
             created_by=user_id,
+            invite_code=invite_code,
         )
         db.add(group)
         await db.flush()
@@ -566,12 +586,33 @@ async def add_group_member(
     return member
 
 
-async def join_group(db: AsyncSession, group_id: UUID, user_id: UUID) -> GroupMember:
+async def join_group(db: AsyncSession, group_identifier: str | UUID, user_id: UUID) -> GroupMember:
     async with db.begin():
-        group = await db.get(Group, group_id)
-        if not group:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Group not found")
+        target_group: Group | None = None
 
+        if isinstance(group_identifier, UUID):
+            target_group = await db.get(Group, group_identifier)
+        else:
+            raw_str = str(group_identifier).strip()
+            # 1. Try parsing as UUID
+            try:
+                parsed_uuid = UUID(raw_str)
+                target_group = await db.get(Group, parsed_uuid)
+            except (ValueError, AttributeError):
+                pass
+
+            # 2. If not found by UUID, try lookup by invite_code (case-insensitive)
+            if not target_group:
+                stmt = select(Group).where(func.upper(Group.invite_code) == raw_str.upper())
+                target_group = (await db.execute(stmt)).scalar_one_or_none()
+
+        if not target_group:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "Group not found. Please verify the invite code or group ID."
+            )
+
+        group_id = target_group.id
         existing = (await db.execute(select(GroupMember).where(
             GroupMember.group_id == group_id, GroupMember.user_id == user_id
         ))).scalar_one_or_none()
@@ -586,8 +627,8 @@ async def join_group(db: AsyncSession, group_id: UUID, user_id: UUID) -> GroupMe
         db.add(member)
         await db.flush()
 
-        if group.monthly_rent and group.monthly_rent > 0:
-            await _sync_monthly_rent(db, group_id, user_id, group.monthly_rent)
+        if target_group.monthly_rent and target_group.monthly_rent > 0:
+            await _sync_monthly_rent(db, group_id, user_id, target_group.monthly_rent)
 
     return member
 

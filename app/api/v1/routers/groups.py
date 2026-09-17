@@ -18,6 +18,7 @@ from app.schemas.group import (
     GroupExpenseResponse,
     GroupExpenseSplitResponse,
     GroupExpenseUpdate,
+    GroupJoinRequest,
     GroupMemberAdd,
     GroupMemberResponse,
     GroupMemberRoleUpdate,
@@ -176,13 +177,25 @@ async def post_group_member(
     return ResponseEnvelope(data=resp)
 
 
-@router.post("/{id}/join", response_model=ResponseEnvelope[GroupMemberResponse], status_code=201)
-async def post_join_group(
-    id: UUID,
+@router.post("/join", response_model=ResponseEnvelope[GroupMemberResponse], status_code=201)
+async def join_group_by_code_endpoint(
+    payload: GroupJoinRequest,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ResponseEnvelope[GroupMemberResponse]:
-    """Join a group using invite ID. Authenticated user is added as a member."""
+    """Join a group using invite code or group UUID. Authenticated user is added as a member."""
+    member = await join_group(db, payload.code, current_user.id)
+    resp = await _member_response(db, member)
+    return ResponseEnvelope(data=resp)
+
+
+@router.post("/{id}/join", response_model=ResponseEnvelope[GroupMemberResponse], status_code=201)
+async def post_join_group(
+    id: str,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[GroupMemberResponse]:
+    """Join a group using invite code or group UUID. Authenticated user is added as a member."""
     member = await join_group(db, id, current_user.id)
     resp = await _member_response(db, member)
     return ResponseEnvelope(data=resp)

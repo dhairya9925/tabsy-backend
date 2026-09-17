@@ -368,3 +368,54 @@ async def test_group_writes_openapi_contracts(client):
         resp_code = "201" if method == "post" else "200"
         content = endpoint["responses"][resp_code]["content"]["application/json"]["schema"]
         assert "ResponseEnvelope" in content.get("$ref", "") or "ResponseEnvelope" in str(content)
+
+
+@pytest.mark.asyncio
+async def test_group_invite_code_generation_and_joining(client):
+    # 1. Create a group as User A
+    res_create = await client.post(
+        "/api/v1/groups/",
+        headers=bearer(USER_A),
+        json={"name": "Flat 302"},
+    )
+    assert res_create.status_code == 201
+    group_data = res_create.json()["data"]
+    invite_code = group_data["invite_code"]
+    assert invite_code is not None
+    assert len(invite_code) == 10
+    assert invite_code.isalnum()
+
+    # 2. Join via POST /api/v1/groups/join using exact invite code as User B
+    res_join_b = await client.post(
+        "/api/v1/groups/join",
+        headers=bearer(USER_B),
+        json={"code": invite_code},
+    )
+    assert res_join_b.status_code == 201
+    assert res_join_b.json()["data"]["role"] == "member"
+
+    # 3. Join via POST /api/v1/groups/join using lowercase code as User C (case-insensitive)
+    res_join_c = await client.post(
+        "/api/v1/groups/join",
+        headers=bearer(USER_C),
+        json={"code": invite_code.lower()},
+    )
+    assert res_join_c.status_code == 201
+    assert res_join_c.json()["data"]["role"] == "member"
+
+    # 4. Verify duplicate join fails with 409
+    res_dup = await client.post(
+        "/api/v1/groups/join",
+        headers=bearer(USER_B),
+        json={"code": invite_code},
+    )
+    assert res_dup.status_code == 409
+
+    # 5. Verify invalid code fails with 404
+    res_inv = await client.post(
+        "/api/v1/groups/join",
+        headers=bearer(uuid.uuid4()),
+        json={"code": "NONEXIST10"},
+    )
+    assert res_inv.status_code == 404
+
