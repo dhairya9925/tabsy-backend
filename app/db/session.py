@@ -7,6 +7,7 @@ from app.core.config import settings
 connect_args = {}
 if "supabase.com" in settings.async_database_url or "sslmode=require" in settings.async_database_url:
     connect_args["ssl"] = "require"
+    connect_args["statement_cache_size"] = 0
 
 engine = create_async_engine(
     settings.async_database_url,
