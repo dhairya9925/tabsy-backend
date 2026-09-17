@@ -1,4 +1,5 @@
 import calendar
+import math
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Sequence
@@ -17,6 +18,10 @@ from app.models.settlement import (
     MonthlySettlement,
 )
 from app.schemas.group import (
+    CoordinatorChecklist,
+    CoordinatorPendingBill,
+    CoordinatorPendingCollection,
+    CoordinatorPendingRefund,
     GroupBalanceResponse,
     GroupCreate,
     GroupExpenseBulkCreate,
@@ -26,6 +31,12 @@ from app.schemas.group import (
     GroupMemberRoleUpdate,
     GroupSettleUpRequest,
     GroupUpdate,
+    MemberLedgerItem,
+    MemberObligationBreakdown,
+    MonthlyLedgerContributionRecord,
+    MonthlyLedgerResponse,
+    MonthlyLedgerSummary,
+    UserLedgerActionSummary,
 )
 from app.schemas.settlement import (
     MemberMonthlyExclusionWrite,
@@ -1399,4 +1410,347 @@ async def set_member_monthly_exclusion(
                 db.add(new_exclusion)
                 await db.flush()
                 return new_exclusion
+
+
+async def get_monthly_ledger(
+    db: AsyncSession, group_id: UUID, user_id: UUID, month: int, year: int
+) -> MonthlyLedgerResponse:
+    """
+    Computes the complete Monthly Household Ledger replicating the shared-living spreadsheet:
+    - Obligation = Rent Share (ceil-rounded whole rupees) + Shared Expense Share + Individual Adjustments
+    - Paid = Out-of-pocket fronted expenses + verified contributions
+    - Balance = Obligation - Paid (Positive = owes coordinator, Negative = coordinator owes refund)
+    - Total Balance exactly equals Unpaid External Bills (e.g. Landlord Rent).
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Month must be between 1 and 12")
+    if year < 2020:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Year must be 2020 or later")
+
+    group = await get_group_detail(db, group_id, user_id)
+    members_with_profiles = await get_group_members(db, group_id, user_id)
+
+    # 1. Fetch exclusions
+    exclusions_list = await get_member_monthly_exclusions(db, group_id, user_id, month, year)
+    exclusion_map = {e.user_id: e.exclusion_type for e in exclusions_list}
+
+    # 2. Fetch settlement
+    settlement = await get_monthly_settlement(db, group_id, user_id, month, year)
+    settlement_id = settlement.id if settlement else None
+    settlement_status = settlement.status if settlement else "open"
+
+    # 3. Fetch member statuses
+    member_statuses: dict[UUID, str] = {}
+    if settlement:
+        stmt = select(MemberMonthlyStatus).where(MemberMonthlyStatus.settlement_id == settlement.id)
+        for s in (await db.execute(stmt)).scalars().all():
+            member_statuses[s.user_id] = s.status
+
+    # 4. Calculate Rent with Ceil Rounding Rule
+    eligible_rent_members = [
+        m for m, p in members_with_profiles if exclusion_map.get(m.user_id) != "full"
+    ]
+    eligible_count = len(eligible_rent_members)
+
+    monthly_rent = group.monthly_rent or Decimal("0.00")
+    if monthly_rent > 0 and eligible_count > 0:
+        raw_rent = monthly_rent / Decimal(eligible_count)
+        # Whole-rupee ceiling rounding specifically for shared living ledger
+        per_member_rent = Decimal(math.ceil(raw_rent)).quantize(Decimal("0.01"))
+    else:
+        per_member_rent = Decimal("0.00")
+
+    # 5. Fetch expenses for the month
+    expenses = await get_monthly_group_expenses(db, group_id, user_id, month, year)
+
+    expense_shares: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
+    adjustments: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
+    total_paid: dict[UUID, Decimal] = {m.user_id: Decimal("0.00") for m, _ in members_with_profiles}
+
+    active_member_ids = {m.user_id for m, _ in members_with_profiles if exclusion_map.get(m.user_id) != "full"}
+
+    for exp in expenses:
+        # Check if automated rent expense (external bill pending landlord payment)
+        if exp.category == "rent" and (exp.note or "").strip() == "Automated Monthly Rent":
+            continue
+
+        payer = exp.paid_by or exp.user_id
+        if payer in total_paid:
+            total_paid[payer] += Decimal(str(exp.amount)).quantize(Decimal("0.01"))
+
+        split_user_ids = {s.user_id for s in exp.splits}
+        # If splits cover all active members, classify as shared expense
+        if len(active_member_ids) > 1 and split_user_ids >= active_member_ids:
+            for s in exp.splits:
+                if s.user_id in expense_shares:
+                    expense_shares[s.user_id] += Decimal(str(s.amount)).quantize(Decimal("0.01"))
+        else:
+            for s in exp.splits:
+                if s.user_id in adjustments:
+                    adjustments[s.user_id] += Decimal(str(s.amount)).quantize(Decimal("0.01"))
+
+    # 6. Identify Coordinator (Pramukh)
+    admins = [(m, p) for m, p in members_with_profiles if m.role == "admin"]
+    if any(m.user_id == group.created_by for m, _ in admins):
+        coord_m, coord_p = next((m, p) for m, p in admins if m.user_id == group.created_by)
+    elif admins:
+        coord_m, coord_p = admins[0]
+    else:
+        coord_m, coord_p = members_with_profiles[0]
+
+    coord_name = coord_p.display_name if (coord_p and coord_p.display_name) else "Coordinator"
+    coord_upi = coord_p.email if (coord_p and coord_p.email and "@" in coord_p.email and not coord_p.email.endswith(".invalid")) else None
+
+    # 7. Assemble per-member ledger items
+    member_items: list[MemberLedgerItem] = []
+    for m, p in members_with_profiles:
+        is_full = (exclusion_map.get(m.user_id) == "full")
+        is_partial = (exclusion_map.get(m.user_id) == "partial")
+        r_share = Decimal("0.00") if is_full else per_member_rent
+        e_share = expense_shares.get(m.user_id, Decimal("0.00")).quantize(Decimal("0.01"))
+        adj = adjustments.get(m.user_id, Decimal("0.00")).quantize(Decimal("0.01"))
+        tot_exp = (r_share + e_share + adj).quantize(Decimal("0.01"))
+        tot_p = total_paid.get(m.user_id, Decimal("0.00")).quantize(Decimal("0.01"))
+        bal = (tot_exp - tot_p).quantize(Decimal("0.01"))
+
+        status_val = member_statuses.get(m.user_id)
+        if not status_val:
+            if bal <= 0:
+                status_val = "credited" if bal < 0 else "confirmed"
+            else:
+                status_val = "pending"
+
+        display_name = (
+            p.display_name if (p and p.display_name) else (p.email if (p and p.email) else f"Member {str(m.user_id)[:6]}")
+        )
+        avatar = p.avatar_url if p else None
+
+        member_items.append(
+            MemberLedgerItem(
+                user_id=m.user_id,
+                display_name=display_name,
+                email=p.email if p else None,
+                avatar_url=avatar,
+                role=m.role,
+                is_excluded=is_full or is_partial,
+                exclusion_type=exclusion_map.get(m.user_id),
+                rent_share=r_share,
+                expense_share=e_share,
+                adjustments=adj,
+                total_expense=tot_exp,
+                total_paid=tot_p,
+                balance=bal,
+                status=status_val,
+            )
+        )
+
+    # 8. Compute Summary
+    tot_rent = sum(item.rent_share for item in member_items)
+    tot_shared = sum(item.expense_share for item in member_items)
+    tot_adjustments = sum(item.adjustments for item in member_items)
+    grand_total = tot_rent + tot_shared + tot_adjustments
+    tot_paid_all = sum(item.total_paid for item in member_items)
+    tot_balance = grand_total - tot_paid_all
+
+    members_to_contribute = sum(item.balance for item in member_items if item.balance > 0)
+    over_contributed = sum(abs(item.balance) for item in member_items if item.balance < 0)
+    remaining_for_bills = members_to_contribute - over_contributed
+
+    coll_pct = round(float(tot_paid_all) / float(grand_total) * 100, 1) if grand_total > 0 else 100.0
+    bill_pct = round(float(tot_shared) / float(grand_total) * 100, 1) if grand_total > 0 else 100.0
+
+    summary = MonthlyLedgerSummary(
+        total_rent=tot_rent,
+        total_shared_expenses=tot_shared,
+        total_adjustments=tot_adjustments,
+        grand_total=grand_total,
+        total_paid=tot_paid_all,
+        total_balance=tot_balance,
+        members_to_contribute=members_to_contribute,
+        over_contributed=over_contributed,
+        remaining_for_bills=remaining_for_bills,
+        collection_progress_pct=min(100.0, max(0.0, coll_pct)),
+        bill_progress_pct=min(100.0, max(0.0, bill_pct)),
+    )
+
+    # 9. Caller action summary (my_summary)
+    caller_item = next((item for item in member_items if item.user_id == user_id), None)
+    my_summary = None
+    if caller_item:
+        if caller_item.balance > 0:
+            action = "pay_coordinator"
+            amt = caller_item.balance
+        elif caller_item.balance < 0:
+            action = "receive_refund"
+            amt = abs(caller_item.balance)
+        else:
+            action = "settled"
+            amt = Decimal("0.00")
+
+        is_coord = (coord_m.user_id == user_id)
+        coord_label = f"{coord_name} (You)" if is_coord else coord_name
+
+        month_name = calendar.month_name[month]
+        upi_uri = None
+        if action == "pay_coordinator" and coord_upi and not is_coord:
+            upi_uri = f"upi://pay?pa={coord_upi}&pn={coord_name}&am={amt}&tn={group.name}+{month_name}+Ledger"
+
+        my_summary = UserLedgerActionSummary(
+            action=action,
+            amount=amt,
+            coordinator_name=coord_label,
+            coordinator_id=coord_m.user_id,
+            coordinator_upi_id=coord_upi,
+            status=caller_item.status,
+            upi_uri=upi_uri,
+            breakdown=MemberObligationBreakdown(
+                rent_share=caller_item.rent_share,
+                expense_share=caller_item.expense_share,
+                adjustments=caller_item.adjustments,
+                total_obligation=caller_item.total_expense,
+                already_paid=caller_item.total_paid,
+            ),
+        )
+
+    # 10. Coordinator checklist (coordinator_summary)
+    caller_m = next((m for m, _ in members_with_profiles if m.user_id == user_id), None)
+    coordinator_summary = None
+    if caller_m and caller_m.role == "admin":
+        to_collect = [
+            CoordinatorPendingCollection(
+                user_id=item.user_id,
+                display_name=item.display_name,
+                avatar_url=item.avatar_url,
+                amount=item.balance,
+                status=item.status,
+            )
+            for item in member_items if item.balance > 0
+        ]
+        to_refund = [
+            CoordinatorPendingRefund(
+                user_id=item.user_id,
+                display_name=item.display_name,
+                avatar_url=item.avatar_url,
+                amount=abs(item.balance),
+                status=item.status,
+            )
+            for item in member_items if item.balance < 0
+        ]
+
+        ext_bills = []
+        if monthly_rent > 0:
+            ext_bills.append(
+                CoordinatorPendingBill(
+                    category="rent",
+                    description=f"{calendar.month_name[month]} Landlord Rent",
+                    amount=monthly_rent,
+                    status="unpaid",
+                )
+            )
+
+        coordinator_summary = CoordinatorChecklist(
+            members_to_collect=to_collect,
+            total_to_collect=members_to_contribute,
+            members_to_refund=to_refund,
+            total_to_refund=over_contributed,
+            net_cash_for_bills=remaining_for_bills,
+            external_bills_pending=ext_bills,
+            total_external_bills_pending=sum(b.amount for b in ext_bills),
+        )
+
+    return MonthlyLedgerResponse(
+        group_id=group.id,
+        group_name=group.name,
+        month=month,
+        year=year,
+        settlement_id=settlement_id,
+        settlement_status=settlement_status,
+        summary=summary,
+        members=member_items,
+        my_summary=my_summary,
+        coordinator_summary=coordinator_summary,
+    )
+
+
+async def record_monthly_ledger_contribution(
+    db: AsyncSession,
+    group_id: UUID,
+    month: int,
+    year: int,
+    caller_id: UUID,
+    payload: MonthlyLedgerContributionRecord,
+) -> MemberMonthlyStatus:
+    """
+    Records or updates a member's payment contribution for a given monthly ledger cycle.
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Month must be between 1 and 12")
+    if year < 2020:
+        raise HTTPException(status_code=422, detail="Year must be 2020 or later")
+
+    async with db.begin():
+        await get_group_detail(db, group_id, caller_id)
+
+        # Ensure settlement exists
+        settlement_stmt = select(MonthlySettlement).where(
+            MonthlySettlement.group_id == group_id,
+            MonthlySettlement.month == month,
+            MonthlySettlement.year == year,
+        )
+        settlement = (await db.execute(settlement_stmt)).scalar_one_or_none()
+        if not settlement:
+            settlement = MonthlySettlement(
+                group_id=group_id,
+                month=month,
+                year=year,
+                status="open",
+            )
+            db.add(settlement)
+            await db.flush()
+
+        if settlement.status == "locked":
+            raise HTTPException(status_code=400, detail="Cannot record contributions for a locked settlement period")
+
+        target_member = await db.scalar(
+            select(GroupMember.id).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == payload.from_user_id
+            )
+        )
+        if not target_member:
+            raise HTTPException(status_code=404, detail="Target user is not a group member")
+
+        caller_role = await db.scalar(
+            select(GroupMember.role).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == caller_id
+            )
+        )
+        is_self = (caller_id == payload.from_user_id)
+        if not is_self and caller_role != "admin":
+            raise HTTPException(status_code=403, detail="Only the member or a group admin can record contributions")
+
+        status_val = "complete" if caller_role == "admin" else "submitted"
+
+        status_stmt = (
+            select(MemberMonthlyStatus)
+            .where(
+                MemberMonthlyStatus.settlement_id == settlement.id,
+                MemberMonthlyStatus.user_id == payload.from_user_id,
+            )
+            .with_for_update()
+        )
+        existing_status = (await db.execute(status_stmt)).scalar_one_or_none()
+        if existing_status:
+            existing_status.status = status_val
+            await db.flush()
+            return existing_status
+
+        new_status = MemberMonthlyStatus(
+            settlement_id=settlement.id,
+            user_id=payload.from_user_id,
+            status=status_val,
+        )
+        db.add(new_status)
+        await db.flush()
+        return new_status
+
 

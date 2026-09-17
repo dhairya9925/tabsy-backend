@@ -25,6 +25,8 @@ from app.schemas.group import (
     GroupSettleUpRequest,
     GroupUpdate,
     MemberProfileResponse,
+    MonthlyLedgerContributionRecord,
+    MonthlyLedgerResponse,
 )
 from app.schemas.settlement import (
     MemberMonthlyExclusionResponse,
@@ -51,10 +53,12 @@ from app.services.group_service import (
     get_member_monthly_exclusions,
     get_member_monthly_statuses,
     get_monthly_group_expenses,
+    get_monthly_ledger,
     get_monthly_settlement,
     get_multi_month_settlements,
     get_user_groups,
     join_group,
+    record_monthly_ledger_contribution,
     remove_group_member,
     set_member_monthly_exclusion,
     settle_group_expenses,
@@ -523,4 +527,38 @@ async def post_reimburse_bulk(
     """Mark all approved group expenses as reimbursed and splits as settled."""
     count = await bulk_reimburse_group_expenses(db, id, current_user.id)
     return ResponseEnvelope(data={"reimbursed_count": count})
+
+
+@router.get("/{id}/monthly-ledger", response_model=ResponseEnvelope[MonthlyLedgerResponse])
+async def get_group_monthly_ledger_endpoint(
+    id: UUID,
+    month: Annotated[int, Query(ge=1, le=12)],
+    year: Annotated[int, Query(ge=2020)],
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[MonthlyLedgerResponse]:
+    """
+    Computes the complete Monthly Household Ledger for the group:
+    - Member Obligation = Rent Share (ceil-rounded whole rupees) + Shared Expenses + Adjustments
+    - Paid = Out-of-pocket fronted expenses + verified contributions
+    - Balance = Obligation - Paid
+    - Returns full ledger, summary, my_summary, and coordinator_summary.
+    """
+    ledger = await get_monthly_ledger(db, id, current_user.id, month, year)
+    return ResponseEnvelope(data=ledger)
+
+
+@router.post("/{id}/monthly-ledger/contributions", response_model=ResponseEnvelope[MemberMonthlyStatusResponse])
+async def post_monthly_ledger_contribution(
+    id: UUID,
+    month: Annotated[int, Query(ge=1, le=12)],
+    year: Annotated[int, Query(ge=2020)],
+    payload: MonthlyLedgerContributionRecord,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[MemberMonthlyStatusResponse]:
+    """Record a member's payment contribution for the monthly ledger cycle."""
+    status_obj = await record_monthly_ledger_contribution(db, id, month, year, current_user.id, payload)
+    return ResponseEnvelope(data=MemberMonthlyStatusResponse.model_validate(status_obj))
+
 

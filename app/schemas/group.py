@@ -171,3 +171,112 @@ class GroupSettleUpRequest(BaseModel):
     from_user_id: UUID
     to_user_id: UUID
 
+
+class MemberLedgerItem(BaseModel):
+    user_id: UUID
+    display_name: str
+    email: str | None = None
+    avatar_url: str | None = None
+    role: str = "member"
+    is_excluded: bool = False
+    exclusion_type: str | None = None
+    rent_share: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    expense_share: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    adjustments: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_expense: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_paid: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    balance: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "pending"  # "pending", "confirmed", "credited"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MemberObligationBreakdown(BaseModel):
+    rent_share: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    expense_share: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    adjustments: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_obligation: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    already_paid: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+
+
+class UserLedgerActionSummary(BaseModel):
+    action: str  # "pay_coordinator" | "receive_refund" | "settled"
+    amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    coordinator_name: str | None = None
+    coordinator_id: UUID | None = None
+    coordinator_upi_id: str | None = None
+    status: str = "pending"
+    upi_uri: str | None = None
+    breakdown: MemberObligationBreakdown
+
+
+class CoordinatorPendingCollection(BaseModel):
+    user_id: UUID
+    display_name: str
+    avatar_url: str | None = None
+    amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "pending"
+
+
+class CoordinatorPendingRefund(BaseModel):
+    user_id: UUID
+    display_name: str
+    avatar_url: str | None = None
+    amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "credited"
+
+
+class CoordinatorPendingBill(BaseModel):
+    category: str
+    description: str
+    amount: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    status: str = "unpaid"
+
+
+class CoordinatorChecklist(BaseModel):
+    members_to_collect: list[CoordinatorPendingCollection] = Field(default_factory=list)
+    total_to_collect: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    members_to_refund: list[CoordinatorPendingRefund] = Field(default_factory=list)
+    total_to_refund: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    net_cash_for_bills: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    external_bills_pending: list[CoordinatorPendingBill] = Field(default_factory=list)
+    total_external_bills_pending: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+
+
+class MonthlyLedgerSummary(BaseModel):
+    total_rent: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_shared_expenses: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_adjustments: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    grand_total: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_paid: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    total_balance: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    members_to_contribute: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    over_contributed: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    remaining_for_bills: Decimal = Field(default=Decimal("0.00"), max_digits=12, decimal_places=2)
+    collection_progress_pct: float = 0.0
+    bill_progress_pct: float = 0.0
+
+
+class MonthlyLedgerResponse(BaseModel):
+    group_id: UUID
+    group_name: str
+    month: int
+    year: int
+    settlement_id: UUID | None = None
+    settlement_status: str = "open"  # "open" | "locked"
+    summary: MonthlyLedgerSummary
+    members: list[MemberLedgerItem] = Field(default_factory=list)
+    my_summary: UserLedgerActionSummary | None = None
+    coordinator_summary: CoordinatorChecklist | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MonthlyLedgerContributionRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    from_user_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    note: str | None = Field(default=None, max_length=255)
+
+
