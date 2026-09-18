@@ -1,5 +1,5 @@
 # ==============================================================================
-# Backend .gitignore
+# Tabsy Backend — .gitignore
 # ==============================================================================
 
 # Virtual environment
@@ -26,7 +26,25 @@ htmlcov/
 dist/
 build/
 
-# Environment
+# Environment & secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.cert
+
+# Local documentation & planning
+/plans/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.agents/
+.gemini/
+.codex/
+.cursor/
