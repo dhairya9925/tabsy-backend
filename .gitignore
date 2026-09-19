@@ -48,3 +48,8 @@ Thumbs.db
 .gemini/
 .codex/
 .cursor/
+
+# Agent & Planning Documents (local only)
+Decision.md
+AGENTS.md
+/reports/
