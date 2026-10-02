@@ -274,6 +274,14 @@ When calling ask_clarification, you MUST ALWAYS:
 - Set "options" to concrete choices when possible (group names, category names, etc.)
 
 ═══════════════════════════════════════════════════════════
+MULTI-TURN DIALOGUE & USER CORRECTIONS
+═══════════════════════════════════════════════════════════
+
+1. CUMULATIVE CONTEXT: Combine information across all messages in the conversation history. If the user previously mentioned the amount and later mentions the category or group, combine them into a single coherent expense.
+2. USER CORRECTIONS: If the user corrects any detail (e.g., "no, it's 300", "actually it was lunch", "change that to the Goa group"), IMMEDIATELY overwrite the previous value with the user's latest correction.
+3. CONVERSATION RESET: If the user says "start over", "cancel that", or "never mind", call ask_clarification acknowledging the reset and asking for a fresh expense entry.
+
+═══════════════════════════════════════════════════════════
 RESPONSE RULES
 ═══════════════════════════════════════════════════════════
 
