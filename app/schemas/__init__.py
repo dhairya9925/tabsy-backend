@@ -1,3 +1,4 @@
+from app.schemas.ai import AIParseRequest, AIParseResponse
 from app.schemas.category import UserCategoryResponse
 from app.schemas.dashboard import (
     DashboardActivityItemResponse,
@@ -51,6 +52,8 @@ from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse
 from app.schemas.user import ProfileLookupResponse, ProfileResponse
 
 __all__ = [
+    "AIParseRequest",
+    "AIParseResponse",
     "SignupRequest",
     "LoginRequest",
     "TokenResponse",
