@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.routers import auth, categories, dashboard, expenses, friends, groups, health, users
+from app.api.v1.routers import ai, auth, categories, dashboard, expenses, friends, groups, health, users
 
 api_router = APIRouter()
 
@@ -12,6 +12,7 @@ api_router.include_router(friends.router, prefix="/friends", tags=["Friends"])
 api_router.include_router(expenses.router, prefix="/expenses", tags=["Expenses"])
 api_router.include_router(groups.router, prefix="/groups", tags=["Groups"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+api_router.include_router(ai.router, prefix="/ai", tags=["AI"])
 
 # Optional backward compatibility alias for Phase 1 scaffolding
 api_router.add_api_route(

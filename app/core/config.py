@@ -34,7 +34,29 @@ class Settings(BaseSettings):
         "http://localhost:3000",
     ]
 
-    @field_validator("DATABASE_URL", "SUPABASE_URL", "SUPABASE_JWT_SECRET", "ENVIRONMENT", mode="before")
+    # AI / LLM Configuration (OpenAI-compatible)
+    LLM_API_BASE_URL: str = Field(
+        default="https://api.openai.com/v1",
+        validation_alias=AliasChoices("LLM_API_BASE_URL", "OPENAI_BASE_URL"),
+    )
+    LLM_API_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY"),
+    )
+    LLM_MODEL_NAME: str = Field(
+        default="gpt-4o-mini",
+        validation_alias=AliasChoices("LLM_MODEL_NAME", "OPENAI_MODEL"),
+    )
+    @field_validator(
+        "DATABASE_URL",
+        "SUPABASE_URL",
+        "SUPABASE_JWT_SECRET",
+        "ENVIRONMENT",
+        "LLM_API_BASE_URL",
+        "LLM_API_KEY",
+        "LLM_MODEL_NAME",
+        mode="before",
+    )
     @classmethod
     def strip_quotes(cls, v: Any) -> Any:
         if isinstance(v, str):

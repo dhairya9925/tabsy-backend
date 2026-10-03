@@ -4,7 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 
 # Configure async engine with SSL if connecting to Supabase cloud
-connect_args = {}
+connect_args = {
+    "statement_cache_size": 0,
+    "prepared_statement_cache_size": 0,
+}
 if "supabase.com" in settings.async_database_url or "sslmode=require" in settings.async_database_url:
     connect_args["ssl"] = "require"
     connect_args["statement_cache_size"] = 0
