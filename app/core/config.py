@@ -47,11 +47,6 @@ class Settings(BaseSettings):
         default="gpt-4o-mini",
         validation_alias=AliasChoices("LLM_MODEL_NAME", "OPENAI_MODEL"),
     )
-    LLM_AUDIO_MODEL_NAME: str = Field(
-        default="whisper-1",
-        validation_alias=AliasChoices("LLM_AUDIO_MODEL_NAME", "WHISPER_MODEL"),
-    )
-
     @field_validator(
         "DATABASE_URL",
         "SUPABASE_URL",
@@ -60,7 +55,6 @@ class Settings(BaseSettings):
         "LLM_API_BASE_URL",
         "LLM_API_KEY",
         "LLM_MODEL_NAME",
-        "LLM_AUDIO_MODEL_NAME",
         mode="before",
     )
     @classmethod

@@ -20,7 +20,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, status
 from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -684,39 +684,6 @@ def _build_fallback_clarification(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Audio Transcription (Speech-to-Text via Whisper)
-# ─────────────────────────────────────────────────────────────────────────────
-async def transcribe_audio(audio_file: UploadFile) -> str:
-    """
-    Transcribe uploaded audio file using Whisper API.
-    Raises HTTPException if file is empty or transcription fails.
-    """
-    try:
-        content = await audio_file.read()
-        if not content or len(content) < 100:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Audio recording is empty or too short. Please speak clearly and try again.",
-            )
-
-        client = get_ai_client()
-        filename = audio_file.filename or "recording.m4a"
-        content_type = audio_file.content_type or "audio/m4a"
-
-        transcription = await client.audio.transcriptions.create(
-            model=settings.LLM_AUDIO_MODEL_NAME,
-            file=(filename, content, content_type),
-        )
-        return transcription.text.strip()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Audio transcription failed: %s", str(e))
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Audio transcription service error: {str(e)}",
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
