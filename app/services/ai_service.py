@@ -183,8 +183,10 @@ amount:
 
 category:
 - MUST match one of the category slugs/names in USER_CONTEXT.categories (case-insensitive)
-- If the user mentions something that maps to a category (e.g., "lunch" -> "food", "uber" -> "transport"), use the closest matching category
-- If no category can be reasonably inferred, call ask_clarification with the user's categories as options
+- NEVER output generic or fabricated categories like 'general', 'General', 'misc', 'miscellaneous', or 'Expense'.
+- If the user mentions groceries, sabji, vegetables, milk, or dining, map to 'food' (or 'groceries' if available in USER_CONTEXT.categories).
+- If the user mentions cabs, petrol, travel, or transit, map to 'transport'.
+- If the expense description does not clearly match a specific category, map to 'other'.
 - Category value in the function call must use the EXACT slug from USER_CONTEXT.categories
 
 note:
@@ -559,6 +561,18 @@ def validate_ai_output(
         {c["slug"].lower() for c in user_categories}
         | {c["name"].lower() for c in user_categories}
     )
+
+    # Category guardrail: automatically normalize stray/generic categories
+    def sanitize_category(raw_cat: Any) -> str:
+        c = str(raw_cat or "").strip().lower()
+        if c in ("general", "misc", "miscellaneous", "unknown", "expense", "null", "none"):
+            return "other" if "other" in valid_categories else (next(iter(valid_categories)) if valid_categories else "other")
+        if c in ("sabji", "sabzi", "vegetable", "vegetables", "kirana") and ("food" in valid_categories or "groceries" in valid_categories):
+            return "groceries" if "groceries" in valid_categories else "food"
+        return c
+
+    if "category" in function_args:
+        function_args["category"] = sanitize_category(function_args.get("category"))
 
     if function_name == "create_personal_expense":
         amount = function_args.get("amount")
