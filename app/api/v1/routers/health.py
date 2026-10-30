@@ -9,6 +9,7 @@ router = APIRouter()
 
 
 @router.get("/health", response_model=ResponseEnvelope[HealthResponse])
+@router.head("/health", include_in_schema=False)
 async def health_check() -> ResponseEnvelope[HealthResponse]:
     """
     Unauthenticated health check endpoint returning server status.

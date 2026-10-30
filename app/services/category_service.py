@@ -12,7 +12,7 @@ from app.models.profile import Profile
 from app.schemas.category import CategoryCreate, CategoryUpdate
 
 # Mirrors src/lib/categories.ts. Hidden system categories cannot be user-created.
-DEFAULT_CATEGORY_IDS = frozenset({"food", "transport", "shopping", "bills", "system", "other"})
+DEFAULT_CATEGORY_IDS = frozenset({"food", "transport", "shopping", "bills", "entertainment", "health", "system", "other"})
 
 
 async def create_category(db: AsyncSession, user_id: UUID, payload: CategoryCreate) -> UserCategory:

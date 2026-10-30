@@ -28,6 +28,12 @@ CATEGORY_NAME_MAP = {
     "bills & utilities": "bills",
     "bills": "bills",
     "utilities": "bills",
+    "entertainment": "entertainment",
+    "movies": "entertainment",
+    "film": "entertainment",
+    "health & medical": "health",
+    "health": "health",
+    "medical": "health",
     "other": "other",
     "system": "system",
 }
