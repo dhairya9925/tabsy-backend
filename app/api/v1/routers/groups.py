@@ -23,6 +23,8 @@ from app.schemas.group import (
     GroupMemberResponse,
     GroupMemberRoleUpdate,
     GroupResponse,
+    GroupSettlementRecordResponse,
+    GroupSettlementRecordUpdate,
     GroupSettleUpRequest,
     GroupUpdate,
     MemberProfileResponse,
@@ -54,6 +56,7 @@ from app.services.group_service import (
     get_group_detail,
     get_group_expenses,
     get_group_members,
+    get_group_settlement_record,
     get_member_monthly_exclusions,
     get_member_monthly_statuses,
     get_monthly_group_expenses,
@@ -62,14 +65,17 @@ from app.services.group_service import (
     get_multi_month_settlements,
     get_user_groups,
     join_group,
+    list_group_settlement_records,
     lock_monthly_ledger,
     record_monthly_ledger_contribution,
     record_monthly_ledger_disbursement,
     remove_group_member,
+    reverse_group_settlement_record,
     set_member_monthly_exclusion,
     settle_group_expenses,
     update_group,
     update_group_expense,
+    update_group_settlement_record,
     update_member_monthly_status,
     update_member_role,
 )
@@ -550,6 +556,55 @@ async def post_reimburse_bulk(
     """Mark all approved group expenses as reimbursed and splits as settled."""
     count = await bulk_reimburse_group_expenses(db, id, current_user.id)
     return ResponseEnvelope(data={"reimbursed_count": count})
+
+
+@router.get("/{id}/settlement-records", response_model=ResponseEnvelope[list[GroupSettlementRecordResponse]])
+async def get_settlement_records_endpoint(
+    id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[list[GroupSettlementRecordResponse]]:
+    """List all settlement records for a group."""
+    records = await list_group_settlement_records(db, id, current_user.id)
+    return ResponseEnvelope(data=records)
+
+
+@router.get("/{id}/settlement-records/{record_id}", response_model=ResponseEnvelope[GroupSettlementRecordResponse])
+async def get_settlement_record_endpoint(
+    id: UUID,
+    record_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[GroupSettlementRecordResponse]:
+    """Get a specific settlement record."""
+    record = await get_group_settlement_record(db, id, record_id, current_user.id)
+    return ResponseEnvelope(data=record)
+
+
+@router.patch("/{id}/settlement-records/{record_id}", response_model=ResponseEnvelope[GroupSettlementRecordResponse])
+async def update_settlement_record_endpoint(
+    id: UUID,
+    record_id: UUID,
+    payload: GroupSettlementRecordUpdate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[GroupSettlementRecordResponse]:
+    """Edit note or dispute a settlement record within the 3-day window."""
+    updated = await update_group_settlement_record(db, id, record_id, current_user.id, payload)
+    return ResponseEnvelope(data=updated)
+
+
+@router.delete("/{id}/settlement-records/{record_id}", response_model=ResponseEnvelope[dict])
+async def delete_settlement_record_endpoint(
+    id: UUID,
+    record_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseEnvelope[dict]:
+    """Reverse a settlement record within the 3-day window and reopen settled splits."""
+    result = await reverse_group_settlement_record(db, id, record_id, current_user.id)
+    return ResponseEnvelope(data=result)
+
 
 
 @router.get("/{id}/monthly-ledger", response_model=ResponseEnvelope[MonthlyLedgerResponse])

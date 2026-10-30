@@ -34,6 +34,7 @@ from app.schemas.group import (
     GroupMemberAdd,
     GroupMemberRoleUpdate,
     GroupSettlementRecordResponse,
+    GroupSettlementRecordUpdate,
     GroupSettleUpRequest,
     GroupUpdate,
     MemberLedgerItem,
@@ -1355,6 +1356,220 @@ async def settle_group_expenses(
         )
 
         return len(marked_splits), response_schema
+
+
+async def list_group_settlement_records(
+    db: AsyncSession, group_id: UUID, caller_id: UUID
+) -> list[GroupSettlementRecordResponse]:
+    """List all settlement records for a group, ordered newest to oldest."""
+    await get_group_detail(db, group_id, caller_id)
+
+    stmt = (
+        select(GroupSettlementRecord)
+        .where(GroupSettlementRecord.group_id == group_id)
+        .order_by(GroupSettlementRecord.created_at.desc())
+    )
+    records = (await db.execute(stmt)).scalars().all()
+
+    if not records:
+        return []
+
+    user_ids = {r.from_user_id for r in records} | {r.to_user_id for r in records} | {r.settled_by for r in records}
+    profiles_res = await db.execute(select(Profile).where(Profile.user_id.in_(user_ids)))
+    prof_map = {p.user_id: (p.display_name or p.email or "Unknown") for p in profiles_res.scalars().all()}
+
+    return [
+        GroupSettlementRecordResponse(
+            id=r.id,
+            group_id=r.group_id,
+            from_user_id=r.from_user_id,
+            from_name=prof_map.get(r.from_user_id, "Unknown"),
+            to_user_id=r.to_user_id,
+            to_name=prof_map.get(r.to_user_id, "Unknown"),
+            amount=float(r.amount),
+            note=r.note,
+            settled_by=r.settled_by,
+            settled_by_name=prof_map.get(r.settled_by, "Unknown"),
+            created_at=r.created_at,
+            editable_until=r.editable_until,
+            is_disputed=r.is_disputed,
+            is_editable=r.is_editable,
+            settled_split_ids=r.settled_split_ids,
+        )
+        for r in records
+    ]
+
+
+async def get_group_settlement_record(
+    db: AsyncSession, group_id: UUID, record_id: UUID, caller_id: UUID
+) -> GroupSettlementRecordResponse:
+    """Get a specific settlement record for a group."""
+    await get_group_detail(db, group_id, caller_id)
+
+    record = await db.get(GroupSettlementRecord, record_id)
+    if not record or record.group_id != group_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Settlement record not found",
+        )
+
+    profiles_res = await db.execute(
+        select(Profile).where(Profile.user_id.in_([record.from_user_id, record.to_user_id, record.settled_by]))
+    )
+    prof_map = {p.user_id: (p.display_name or p.email or "Unknown") for p in profiles_res.scalars().all()}
+
+    return GroupSettlementRecordResponse(
+        id=record.id,
+        group_id=record.group_id,
+        from_user_id=record.from_user_id,
+        from_name=prof_map.get(record.from_user_id, "Unknown"),
+        to_user_id=record.to_user_id,
+        to_name=prof_map.get(record.to_user_id, "Unknown"),
+        amount=float(record.amount),
+        note=record.note,
+        settled_by=record.settled_by,
+        settled_by_name=prof_map.get(record.settled_by, "Unknown"),
+        created_at=record.created_at,
+        editable_until=record.editable_until,
+        is_disputed=record.is_disputed,
+        is_editable=record.is_editable,
+        settled_split_ids=record.settled_split_ids,
+    )
+
+
+async def update_group_settlement_record(
+    db: AsyncSession,
+    group_id: UUID,
+    record_id: UUID,
+    caller_id: UUID,
+    payload: GroupSettlementRecordUpdate,
+) -> GroupSettlementRecordResponse:
+    """Edit note or dispute a settlement record within the 3-day window."""
+    async with db.begin():
+        await get_group_detail(db, group_id, caller_id)
+
+        caller_role = await db.scalar(
+            select(GroupMember.role).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == caller_id
+            )
+        )
+        is_admin = (caller_role == "admin")
+
+        record = await db.get(GroupSettlementRecord, record_id)
+        if not record or record.group_id != group_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Settlement record not found",
+            )
+
+        if (
+            caller_id != record.from_user_id
+            and caller_id != record.to_user_id
+            and caller_id != record.settled_by
+            and not is_admin
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the debtor, creditor, settlement initiator, or a group admin can edit this record",
+            )
+
+        if not record.is_editable:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Settlement record cannot be edited after 3 days",
+            )
+
+        if payload.note is not None:
+            record.note = payload.note
+        if payload.is_disputed is not None:
+            record.is_disputed = payload.is_disputed
+
+        await db.flush()
+
+        profiles_res = await db.execute(
+            select(Profile).where(Profile.user_id.in_([record.from_user_id, record.to_user_id, record.settled_by]))
+        )
+        prof_map = {p.user_id: (p.display_name or p.email or "Unknown") for p in profiles_res.scalars().all()}
+
+        return GroupSettlementRecordResponse(
+            id=record.id,
+            group_id=record.group_id,
+            from_user_id=record.from_user_id,
+            from_name=prof_map.get(record.from_user_id, "Unknown"),
+            to_user_id=record.to_user_id,
+            to_name=prof_map.get(record.to_user_id, "Unknown"),
+            amount=float(record.amount),
+            note=record.note,
+            settled_by=record.settled_by,
+            settled_by_name=prof_map.get(record.settled_by, "Unknown"),
+            created_at=record.created_at,
+            editable_until=record.editable_until,
+            is_disputed=record.is_disputed,
+            is_editable=record.is_editable,
+            settled_split_ids=record.settled_split_ids,
+        )
+
+
+async def reverse_group_settlement_record(
+    db: AsyncSession, group_id: UUID, record_id: UUID, caller_id: UUID
+) -> dict:
+    """Reverse a settlement record within the 3-day window and re-open its settled splits."""
+    async with db.begin():
+        await get_group_detail(db, group_id, caller_id)
+
+        caller_role = await db.scalar(
+            select(GroupMember.role).where(
+                GroupMember.group_id == group_id, GroupMember.user_id == caller_id
+            )
+        )
+        is_admin = (caller_role == "admin")
+
+        record = await db.get(GroupSettlementRecord, record_id)
+        if not record or record.group_id != group_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Settlement record not found",
+            )
+
+        if (
+            caller_id != record.from_user_id
+            and caller_id != record.to_user_id
+            and caller_id != record.settled_by
+            and not is_admin
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the debtor, creditor, settlement initiator, or a group admin can reverse this settlement",
+            )
+
+        if not record.is_editable:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Settlement record cannot be reversed after 3 days",
+            )
+
+        reopened_count = 0
+        if record.settled_split_ids:
+            split_uuids = [UUID(sid) for sid in record.settled_split_ids]
+            splits_stmt = (
+                select(ExpenseSplit)
+                .where(ExpenseSplit.id.in_(split_uuids))
+                .with_for_update()
+            )
+            splits = (await db.execute(splits_stmt)).scalars().all()
+            for s in splits:
+                s.is_settled = False
+                reopened_count += 1
+
+        await db.delete(record)
+        await db.flush()
+
+        return {
+            "reversed": True,
+            "record_id": str(record_id),
+            "reopened_split_count": reopened_count,
+        }
+
 
 
 
