@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -130,3 +130,42 @@ class MonthlyRolloverCredit(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )
+
+
+def default_editable_until() -> datetime:
+    return datetime.utcnow() + timedelta(days=3)
+
+
+class GroupSettlementRecord(Base):
+    __tablename__ = "group_settlement_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    to_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    settled_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    settled_split_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    editable_until: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=default_editable_until, nullable=False
+    )
+    is_disputed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    @property
+    def is_editable(self) -> bool:
+        if not self.editable_until:
+            return False
+        if self.editable_until.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.utcnow()
+        return now <= self.editable_until
+

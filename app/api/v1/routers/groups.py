@@ -532,8 +532,13 @@ async def post_settle_up(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ResponseEnvelope[dict]:
     """Settle balances between two group members."""
-    count = await settle_group_expenses(db, id, current_user.id, payload)
-    return ResponseEnvelope(data={"settled_count": count})
+    count, record = await settle_group_expenses(db, id, current_user.id, payload)
+    return ResponseEnvelope(
+        data={
+            "settled_count": count,
+            "settlement_record": record.model_dump(mode="json") if record else None,
+        }
+    )
 
 
 @router.post("/{id}/reimburse-bulk", response_model=ResponseEnvelope[dict])

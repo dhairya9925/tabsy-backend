@@ -171,10 +171,12 @@ class GroupExpenseBulkCreate(BaseModel):
 
 
 class GroupSettleUpRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     from_user_id: UUID
     to_user_id: UUID
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    note: str | None = Field(default=None, max_length=255)
 
 
 class MemberLedgerItem(BaseModel):
@@ -333,5 +335,42 @@ class MonthlyLedgerContributionRecord(BaseModel):
     from_user_id: UUID
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     note: str | None = Field(default=None, max_length=255)
+
+
+class GroupSettlementRecordCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    from_user_id: UUID
+    to_user_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    note: str | None = Field(default=None, max_length=255)
+
+
+class GroupSettlementRecordUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    note: str | None = Field(default=None, max_length=255)
+    is_disputed: bool | None = None
+
+
+class GroupSettlementRecordResponse(BaseModel):
+    id: UUID
+    group_id: UUID
+    from_user_id: UUID
+    from_name: str | None = None
+    to_user_id: UUID
+    to_name: str | None = None
+    amount: float
+    note: str | None = None
+    settled_by: UUID
+    settled_by_name: str | None = None
+    created_at: datetime
+    editable_until: datetime
+    is_disputed: bool = False
+    is_editable: bool = True
+    settled_split_ids: list[str] | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 

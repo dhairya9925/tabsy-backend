@@ -1,7 +1,7 @@
 import calendar
 import math
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Sequence
 from uuid import UUID
@@ -14,6 +14,7 @@ from app.models.expense import Expense, ExpenseSplit
 from app.models.group import Group, GroupMember
 from app.models.profile import Profile
 from app.models.settlement import (
+    GroupSettlementRecord,
     MemberMonthlyExclusion,
     MemberMonthlyStatus,
     MonthlyLedgerDisbursement,
@@ -32,6 +33,7 @@ from app.schemas.group import (
     GroupExpenseUpdate,
     GroupMemberAdd,
     GroupMemberRoleUpdate,
+    GroupSettlementRecordResponse,
     GroupSettleUpRequest,
     GroupUpdate,
     MemberLedgerItem,
@@ -260,27 +262,60 @@ async def get_group_balances(
     # 4. Calculate net balances
     net_balance: dict[UUID, Decimal] = {uid: Decimal("0.00") for uid in all_user_ids}
 
-    for exp in expenses:
-        payer_id = exp.paid_by or exp.user_id
-        if not payer_id:
-            continue
+    # Check if there are active settlement records for this group
+    records_stmt = select(GroupSettlementRecord).where(
+        GroupSettlementRecord.group_id == group_id,
+        GroupSettlementRecord.is_disputed.is_(False),
+    )
+    records = (await db.execute(records_stmt)).scalars().all()
 
-        unsettled_splits = [s for s in exp.splits if not s.is_settled]
+    if records:
+        # Full ledger: all expenses minus settlement payments
+        for exp in expenses:
+            payer_id = exp.paid_by or exp.user_id
+            if not payer_id:
+                continue
 
-        if is_reimbursable and sponsor_uuid:
-            # Reimbursable: sponsor owes payer for all unsettled splits
-            if payer_id != sponsor_uuid:
-                total_amount = sum(Decimal(str(s.amount)) for s in unsettled_splits)
-                if total_amount > Decimal("0.01"):
-                    net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + total_amount
-                    net_balance[sponsor_uuid] = net_balance.get(sponsor_uuid, Decimal("0.00")) - total_amount
-        else:
-            # Standard peer-to-peer
-            for split in unsettled_splits:
-                if split.user_id != payer_id:
-                    split_amt = Decimal(str(split.amount))
-                    net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + split_amt
-                    net_balance[split.user_id] = net_balance.get(split.user_id, Decimal("0.00")) - split_amt
+            if is_reimbursable and sponsor_uuid:
+                if payer_id != sponsor_uuid:
+                    total_amount = sum((Decimal(str(s.amount)) for s in exp.splits), Decimal("0.00"))
+                    if total_amount > Decimal("0.01"):
+                        net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + total_amount
+                        net_balance[sponsor_uuid] = net_balance.get(sponsor_uuid, Decimal("0.00")) - total_amount
+            else:
+                for split in exp.splits:
+                    if split.user_id != payer_id:
+                        split_amt = Decimal(str(split.amount))
+                        net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + split_amt
+                        net_balance[split.user_id] = net_balance.get(split.user_id, Decimal("0.00")) - split_amt
+
+        for rec in records:
+            rec_amt = Decimal(str(rec.amount))
+            net_balance[rec.from_user_id] = net_balance.get(rec.from_user_id, Decimal("0.00")) + rec_amt
+            net_balance[rec.to_user_id] = net_balance.get(rec.to_user_id, Decimal("0.00")) - rec_amt
+    else:
+        for exp in expenses:
+            payer_id = exp.paid_by or exp.user_id
+            if not payer_id:
+                continue
+
+            unsettled_splits = [s for s in exp.splits if not s.is_settled]
+
+            if is_reimbursable and sponsor_uuid:
+                # Reimbursable: sponsor owes payer for all unsettled splits
+                if payer_id != sponsor_uuid:
+                    total_amount = sum((Decimal(str(s.amount)) for s in unsettled_splits), Decimal("0.00"))
+                    if total_amount > Decimal("0.01"):
+                        net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + total_amount
+                        net_balance[sponsor_uuid] = net_balance.get(sponsor_uuid, Decimal("0.00")) - total_amount
+            else:
+                # Standard peer-to-peer
+                for split in unsettled_splits:
+                    if split.user_id != payer_id:
+                        split_amt = Decimal(str(split.amount))
+                        net_balance[payer_id] = net_balance.get(payer_id, Decimal("0.00")) + split_amt
+                        net_balance[split.user_id] = net_balance.get(split.user_id, Decimal("0.00")) - split_amt
+
 
     # 5. Greedy debt simplification
     creditors = [
@@ -1159,7 +1194,7 @@ async def delete_group_expense(
 
 async def settle_group_expenses(
     db: AsyncSession, group_id: UUID, caller_id: UUID, payload: GroupSettleUpRequest
-) -> int:
+) -> tuple[int, GroupSettlementRecordResponse | None]:
     async with db.begin():
         await get_group_detail(db, group_id, caller_id)
 
@@ -1176,32 +1211,151 @@ async def settle_group_expenses(
                 detail="Only the debtor, creditor, or a group admin can settle balances",
             )
 
-        exp_stmt = select(Expense.id).where(
-            Expense.group_id == group_id,
-            or_(
-                Expense.paid_by == payload.to_user_id,
-                and_(Expense.paid_by.is_(None), Expense.user_id == payload.to_user_id),
-            ),
-        )
-        exp_ids = (await db.execute(exp_stmt)).scalars().all()
-
-        if not exp_ids:
-            return 0
-
-        splits_stmt = (
-            select(ExpenseSplit)
-            .where(
-                ExpenseSplit.expense_id.in_(exp_ids),
-                ExpenseSplit.user_id == payload.from_user_id,
-                ExpenseSplit.is_settled.is_(False),
+        if payload.from_user_id == payload.to_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot settle balances with oneself",
             )
-            .with_for_update()
+
+        # 1. Fetch group expenses (excluding system / automated rent)
+        expenses_stmt = (
+            select(Expense)
+            .options(selectinload(Expense.splits))
+            .where(
+                Expense.group_id == group_id,
+                or_(Expense.note.is_(None), Expense.note != "Automated Monthly Rent"),
+                or_(Expense.category.is_(None), Expense.category != "system"),
+            )
         )
-        splits = (await db.execute(splits_stmt)).scalars().all()
-        for s in splits:
+        expenses = (await db.execute(expenses_stmt)).scalars().all()
+
+        # 2. Identify unsettled splits between from_user_id and to_user_id (two-way)
+        direct_splits: list[ExpenseSplit] = []      # from_user owes to_user
+        reverse_splits: list[ExpenseSplit] = []     # to_user owes from_user
+        other_from_splits: list[ExpenseSplit] = []  # from_user owes third parties in this group
+
+        for exp in expenses:
+            payer_id = exp.paid_by or exp.user_id
+            if not payer_id:
+                continue
+
+            for split in exp.splits:
+                if split.is_settled:
+                    continue
+
+                if payer_id == payload.to_user_id and split.user_id == payload.from_user_id:
+                    direct_splits.append(split)
+                elif payer_id == payload.from_user_id and split.user_id == payload.to_user_id:
+                    reverse_splits.append(split)
+                elif split.user_id == payload.from_user_id and payer_id != payload.from_user_id:
+                    other_from_splits.append(split)
+
+        # 3. Check current simplified balance from group balances
+        balances = await get_group_balances(db, group_id, caller_id)
+        matched_balance = next(
+            (
+                b for b in balances
+                if b.from_user_id == payload.from_user_id and b.to_user_id == payload.to_user_id
+            ),
+            None,
+        )
+
+        # 4. If no splits and no balance between them, nothing to settle
+        if not direct_splits and not reverse_splits and not other_from_splits and matched_balance is None:
+            return 0, None
+
+        direct_sum = sum((Decimal(str(s.amount)) for s in direct_splits), Decimal("0.00"))
+        reverse_sum = sum((Decimal(str(s.amount)) for s in reverse_splits), Decimal("0.00"))
+        net_direct = direct_sum - reverse_sum
+
+        two_dp = Decimal("0.01")
+        settlement_amount: Decimal | None = None
+        if payload.amount is not None and payload.amount > Decimal("0.00"):
+            settlement_amount = payload.amount.quantize(two_dp, rounding=ROUND_HALF_UP)
+        elif matched_balance is not None:
+            settlement_amount = Decimal(str(matched_balance.amount)).quantize(two_dp, rounding=ROUND_HALF_UP)
+        else:
+            settlement_amount = abs(net_direct).quantize(two_dp, rounding=ROUND_HALF_UP)
+
+        if (settlement_amount is None or settlement_amount <= Decimal("0.00")) and not direct_splits and not reverse_splits:
+            return 0, None
+
+        # 5. Mark splits as settled
+        marked_splits: list[ExpenseSplit] = []
+
+        # Mark all direct and reverse splits between the two parties
+        for s in direct_splits:
             s.is_settled = True
+            marked_splits.append(s)
+
+        for s in reverse_splits:
+            s.is_settled = True
+            marked_splits.append(s)
+
+        # If settlement amount exceeds net_direct (e.g. simplified debt routed via to_user),
+        # also settle other unsettled splits for from_user in the group
+        covered_amount = net_direct
+        if settlement_amount and settlement_amount > covered_amount and other_from_splits:
+            remaining_needed = settlement_amount - covered_amount
+            for s in other_from_splits:
+                if remaining_needed <= Decimal("0.005"):
+                    break
+                s.is_settled = True
+                marked_splits.append(s)
+                remaining_needed -= Decimal(str(s.amount))
+
+        if not marked_splits:
+            return 0, None
+
+        final_amount = (
+            settlement_amount
+            if (settlement_amount and settlement_amount > Decimal("0.00"))
+            else Decimal(str(sum(Decimal(str(s.amount)) for s in marked_splits)))
+        )
+
+        # 6. Create settlement record
+        now = datetime.utcnow()
+        record = GroupSettlementRecord(
+            group_id=group_id,
+            from_user_id=payload.from_user_id,
+            to_user_id=payload.to_user_id,
+            amount=final_amount.quantize(two_dp, rounding=ROUND_HALF_UP),
+            note=payload.note,
+            settled_by=caller_id,
+            settled_split_ids=[str(s.id) for s in marked_splits],
+            created_at=now,
+            editable_until=now + timedelta(days=3),
+            is_disputed=False,
+        )
+        db.add(record)
         await db.flush()
-        return len(splits)
+
+        # 7. Fetch profiles for response
+        profiles_res = await db.execute(
+            select(Profile).where(Profile.user_id.in_([payload.from_user_id, payload.to_user_id, caller_id]))
+        )
+        prof_map = {p.user_id: (p.display_name or p.email or "Unknown") for p in profiles_res.scalars().all()}
+
+        response_schema = GroupSettlementRecordResponse(
+            id=record.id,
+            group_id=record.group_id,
+            from_user_id=record.from_user_id,
+            from_name=prof_map.get(record.from_user_id, "Unknown"),
+            to_user_id=record.to_user_id,
+            to_name=prof_map.get(record.to_user_id, "Unknown"),
+            amount=float(record.amount),
+            note=record.note,
+            settled_by=record.settled_by,
+            settled_by_name=prof_map.get(record.settled_by, "Unknown"),
+            created_at=record.created_at,
+            editable_until=record.editable_until,
+            is_disputed=record.is_disputed,
+            is_editable=record.is_editable,
+            settled_split_ids=record.settled_split_ids,
+        )
+
+        return len(marked_splits), response_schema
+
 
 
 async def bulk_reimburse_group_expenses(

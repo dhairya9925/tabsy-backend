@@ -48,6 +48,9 @@ from app.schemas.group import (
     MonthlyLedgerDisbursementCreate,
     MonthlyLedgerDisbursementResponse,
     MonthlyLedgerLockRequest,
+    GroupSettlementRecordCreate,
+    GroupSettlementRecordUpdate,
+    GroupSettlementRecordResponse,
 )
 from app.schemas.health import HealthResponse
 from app.schemas.settlement import (
@@ -106,6 +109,9 @@ __all__ = [
     "MonthlyLedgerDisbursementCreate",
     "MonthlyLedgerDisbursementResponse",
     "MonthlyLedgerLockRequest",
+    "GroupSettlementRecordCreate",
+    "GroupSettlementRecordUpdate",
+    "GroupSettlementRecordResponse",
     "MonthlySettlementResponse",
     "MonthlySettlementCreate",
     "MemberMonthlyStatusResponse",

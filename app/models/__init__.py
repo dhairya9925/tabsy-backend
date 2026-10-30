@@ -8,6 +8,7 @@ from app.models.settlement import (
     MemberMonthlyExclusion,
     MonthlyLedgerDisbursement,
     MonthlyRolloverCredit,
+    GroupSettlementRecord,
 )
 from app.models.friend import Friend
 from app.models.category import UserCategory
@@ -25,6 +26,7 @@ __all__ = [
     "MemberMonthlyExclusion",
     "MonthlyLedgerDisbursement",
     "MonthlyRolloverCredit",
+    "GroupSettlementRecord",
     "Friend",
     "UserCategory",
     "UserCredential",
