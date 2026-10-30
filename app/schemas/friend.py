@@ -72,6 +72,13 @@ class FriendExpenseCreate(BaseModel):
     splits: list[ExpenseSplitWrite] = Field(default_factory=list, max_length=2)
     split_type: str | None = Field(default=None, pattern="^(equal|full)$")
 
+    @field_validator("paid_by", mode="before")
+    @classmethod
+    def sanitize_paid_by(cls, value):
+        if value == "" or value == "self" or value is None:
+            return None
+        return value
+
     @field_validator("expense_date", mode="before")
     @classmethod
     def iso_date_only(cls, value):
@@ -90,6 +97,13 @@ class FriendExpenseUpdate(BaseModel):
     paid_by: UUID | None = None
     splits: list[ExpenseSplitWrite] | None = Field(default=None, max_length=2)
     split_type: str | None = Field(default=None, pattern="^(equal|full)$")
+
+    @field_validator("paid_by", mode="before")
+    @classmethod
+    def sanitize_paid_by(cls, value):
+        if value == "" or value == "self" or value is None:
+            return None
+        return value
 
     @field_validator("amount", "category", "expense_date", "splits")
     @classmethod

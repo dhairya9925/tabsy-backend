@@ -150,6 +150,13 @@ class GroupExpenseCreate(BaseModel):
     receipt_url: str | None = Field(default=None, max_length=2000)
     splits: list[GroupExpenseSplitWrite] = Field(default_factory=list, max_length=100)
 
+    @field_validator("paid_by", mode="before")
+    @classmethod
+    def sanitize_paid_by(cls, value):
+        if value == "" or value == "self" or value is None:
+            return None
+        return value
+
 
 class GroupExpenseUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -162,6 +169,13 @@ class GroupExpenseUpdate(BaseModel):
     status: str | None = Field(default=None, pattern=r"^(submitted|approved|reimbursed)$")
     receipt_url: str | None = Field(default=None, max_length=2000)
     splits: list[GroupExpenseSplitWrite] | None = Field(default=None, max_length=100)
+
+    @field_validator("paid_by", mode="before")
+    @classmethod
+    def sanitize_paid_by(cls, value):
+        if value == "" or value == "self" or value is None:
+            return None
+        return value
 
 
 class GroupExpenseBulkCreate(BaseModel):
